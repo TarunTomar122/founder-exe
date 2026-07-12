@@ -88,6 +88,15 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
   if (missingKinds.length) result = await invoke(`${prompt}\n\nREPAIR REQUIRED: Your previous response omitted mandatory artifacts: ${missingKinds.join(", ")}. Return the exact role-specific shape now.`);
   const stillMissing = missing(result);
   if (stillMissing.length) throw new Error(`${agent} omitted mandatory artifacts after repair: ${stillMissing.join(", ")}`);
+  if (agent === "landing_page") {
+    const allowedKinds = new Set(["landing_page_brief", "landing_page_html"]);
+    const unexpected = result.artifacts.filter(artifact => !allowedKinds.has(artifact.kind));
+    if (unexpected.length) {
+      result = await invoke(`${prompt}\n\nSCOPE VIOLATION: Return only landing_page_brief and landing_page_html artifacts. Remove all research, GTM, social, backend, product-feature, and other unrelated output. Focus exclusively on the landing-page UI.`);
+      const repairedUnexpected = result.artifacts.filter(artifact => !allowedKinds.has(artifact.kind));
+      if (repairedUnexpected.length) throw new Error(`Landing page agent returned out-of-scope artifacts: ${repairedUnexpected.map(artifact => artifact.kind).join(", ")}`);
+    }
+  }
   if (agent === "landing_page" && runtime.templateName) {
     const brief = result.artifacts.find(artifact => artifact.kind === "landing_page_brief")?.content ?? "";
     if (!new RegExp(`Template ID\\s*:\\s*${runtime.templateName.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`, "i").test(brief)) {
