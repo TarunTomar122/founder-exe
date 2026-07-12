@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { anyApi } from "convex/server";
 import {
   ArrowRight,
@@ -104,6 +104,15 @@ type Project = {
   isShowcase?: boolean;
   createdAt: number;
   conversations: Array<{ _id: string; title: string; status: string; createdAt: number; updatedAt: number }>;
+};
+
+type BillingPlan = {
+  plan: "free" | "builder";
+  paid: boolean;
+  canCreate: boolean;
+  used: number;
+  limit: number;
+  canBypass: boolean;
 };
 
 const AGENTS: Array<{ key: AgentKey; name: string; shortName: string; role: string; avatar: string; description: string; accent: string }> = [
@@ -222,17 +231,68 @@ function StatusDot({ status }: { status: RuntimeStatus }) {
 
 /* ---------------- onboarding ---------------- */
 
+function BillingModal({ ownerKey, plan, onClose }: { ownerKey: string; plan: BillingPlan; onClose: () => void }) {
+  const [busy, setBusy] = useState<"checkout" | "bypass" | null>(null);
+  const [error, setError] = useState("");
+  const createCheckout = useAction(api.billingActions.createCheckout);
+  const activateBypass = useMutation(api.billing.activateInternalBypass);
+
+  async function checkout() {
+    setBusy("checkout"); setError("");
+    try {
+      const result = await createCheckout({ ownerKey, returnUrl: `${window.location.origin}?billing=return` });
+      window.location.assign(result.checkoutUrl);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message.includes("DODO_NOT_CONFIGURED") ? "dodo test checkout is not configured on this deployment yet." : "checkout could not start. try again in a moment.");
+      setBusy(null);
+    }
+  }
+
+  async function bypass() {
+    setBusy("bypass"); setError("");
+    try { await activateBypass({ ownerKey }); onClose(); }
+    catch { setError("this browser is not on the internal testing allowlist."); setBusy(null); }
+  }
+
+  return (
+    <div className="billing-overlay" role="dialog" aria-modal="true" aria-labelledby="billing-title">
+      <section className="billing-modal">
+        <button className="billing-close" onClick={onClose} aria-label="close"><X size={18} /></button>
+        <span className="billing-kicker">free build shipped // upgrade to continue</span>
+        <h2 id="billing-title">keep your agent company running.</h2>
+        <p>your first idea was on us. builder gives this browser up to five new companies every utc month.</p>
+        <div className="billing-price"><strong><sup>$</sup>9</strong><span>usd<br />per month</span></div>
+        <ul><li><Check size={15} /> 5 new projects each month</li><li><Check size={15} /> research, landing and gtm agents</li><li><Check size={15} /> full traces, artifacts and exports</li></ul>
+        {error && <div className="billing-error"><WarningCircle size={16} />{error}</div>}
+        <button className="billing-checkout" disabled={!!busy} onClick={checkout}>{busy === "checkout" ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} continue with dodo</button>
+        {plan.canBypass && <button className="billing-bypass" disabled={!!busy} onClick={bypass}>{busy === "bypass" ? "unlocking…" : "bypass for internal testing"}</button>}
+        <small>dodo payments · test mode until live credentials are installed</small>
+      </section>
+    </div>
+  );
+}
+
 function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerKey: string; projects: Project[]; showcases: Project[]; onReady: (companyId: string, companyName: string) => void; onOpen: (project: Project, conversationId?: string) => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [billingOpen, setBillingOpen] = useState(false);
+  const [error, setError] = useState("");
   const bootstrap = useMutation(api.conversations.bootstrap);
+  const plan = useQuery(api.billing.getPlan, { ownerKey }) as BillingPlan | undefined;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    setError("");
+    if (plan && !plan.canCreate) { setBillingOpen(true); return; }
     setBusy(true);
     try {
       const id = await bootstrap({ name: name.trim(), ownerKey });
       onReady(id, name.trim());
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      if (message.includes("BILLING_REQUIRED")) setBillingOpen(true);
+      else setError("could not start this company. try again in a moment.");
     } finally {
       setBusy(false);
     }
@@ -240,7 +300,7 @@ function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerK
 
   return (
     <main className="onboarding-shell">
-      <header className="onboarding-header"><Brand /><span>private runtime // 01</span></header>
+      <header className="onboarding-header"><Brand /><span>{plan ? `${plan.plan} // ${plan.used} of ${plan.limit} builds used` : "private runtime // loading"}</span></header>
       <section className="onboarding-grid">
         <div className="onboarding-copy">
           <p className="kicker">from shower idea to real thing</p>
@@ -249,6 +309,7 @@ function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerK
           <form className="setup-form" onSubmit={submit}>
             <label>idea / company name<input value={name} onChange={event => setName(event.target.value)} placeholder="my weird little idea" required autoFocus /></label>
             <button disabled={busy}>{busy ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} meet founder</button>
+            {error && <p className="setup-error"><WarningCircle size={15} />{error}</p>}
           </form>
           {!!projects.length && (
             <div className="recent-projects">
@@ -273,6 +334,7 @@ function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerK
           <div className="orbit-label"><small>your company</small><strong>4 agents</strong><span>ready to work</span></div>
         </div>
       </section>
+      {billingOpen && plan && <BillingModal ownerKey={ownerKey} plan={plan} onClose={() => setBillingOpen(false)} />}
     </main>
   );
 }
@@ -1003,6 +1065,7 @@ export function App() {
   const data = useQuery(api.conversations.getConversation, conversationId ? { conversationId: conversationId as never } : "skip") as any;
   const projects = (useQuery(api.conversations.listProjects, { ownerKey }) as Project[] | undefined) ?? [];
   const showcases = (useQuery(api.conversations.listShowcases, {}) as Project[] | undefined) ?? [];
+  const billingPlan = useQuery(api.billing.getPlan, { ownerKey }) as BillingPlan | undefined;
   const runs: Run[] = data?.runs ?? [];
   const artifacts: Artifact[] = data?.artifacts ?? [];
   const events: any[] = data?.events ?? [];
@@ -1070,6 +1133,7 @@ export function App() {
           <Brand />
           <button className="company-label" onClick={() => setShowProjects(true)}><span>{isShowcase ? "showcase" : "company"}</span><strong>{companyName}</strong><small>switch ▾</small></button>
           <div className="runtime"><span className={`runtime-pulse ${active ? "" : "idle"}`} />{workingCount ? `${workingCount} working` : active ? "queued" : "all quiet"}</div>
+          {billingPlan && <span className={`plan-chip plan-${billingPlan.plan}`}>{billingPlan.plan} · {billingPlan.used}/{billingPlan.limit}</span>}
           <button className="new-idea-button" onClick={newProject}>new idea</button>
         </header>
 
