@@ -5,7 +5,7 @@ import { AgentResultSchema, type AgentKey, type WorkerCommand } from "@founder/c
 import { config } from "./config.js";
 import { resultFormats, rolePrompts } from "./prompts.js";
 import { searchLinkup } from "./linkup.js";
-import { selectTemplates } from "./templates.js";
+import { selectTemplate } from "./templates.js";
 import { sanitizePreviewHtml } from "./cloudflare.js";
 
 const exec = promisify(execFile);
@@ -16,12 +16,15 @@ const skillByAgent: Record<AgentKey, string> = {
   go_to_market: "founder-go-to-market",
 };
 
-async function runtimeContext(agent: AgentKey, message: string) {
-  if (agent === "founder") return "";
+async function runtimeContext(agent: AgentKey, message: string): Promise<{ text: string; templateName?: string }> {
+  if (agent === "founder") return { text: "" };
   const evidencePromise = searchLinkup(`${message}\nFind current products, competitors, communities, and user language relevant to this idea.`, 6);
-  if (agent !== "landing_page") return `RUNTIME LINKUP EVIDENCE:\n${JSON.stringify(await evidencePromise)}`;
-  const [evidence, templates] = await Promise.all([evidencePromise, selectTemplates(message)]);
-  return `RUNTIME LINKUP EVIDENCE:\n${JSON.stringify(evidence)}\n\nRUNTIME TEMPLATE CANDIDATES:\n${JSON.stringify(templates)}`;
+  if (agent !== "landing_page") return { text: `RUNTIME LINKUP EVIDENCE:\n${JSON.stringify(await evidencePromise)}` };
+  const [evidence, template] = await Promise.all([evidencePromise, selectTemplate(message)]);
+  return {
+    templateName: template.selected.name,
+    text: `RUNTIME LINKUP EVIDENCE:\n${JSON.stringify(evidence)}\n\nAPPROVED TEMPLATE CATALOGUE SELECTION:\n${JSON.stringify({ name: template.selected.name, score: template.selected.score, promptPath: template.selected.promptPath, alternatives: template.alternatives })}\n\nFULL APPROVED TEMPLATE PROMPT (DESIGN REFERENCE):\n${template.selected.prompt}`,
+  };
 }
 
 function extractJson(text: string) {
@@ -33,9 +36,11 @@ function extractJson(text: string) {
 
 export async function runHermes(agent: AgentKey, command: WorkerCommand) {
   const context = command.context.map((item) => `${item.role}: ${item.content}`).join("\n");
-  const freshContext = await runtimeContext(agent, command.message);
+  const runtime = await runtimeContext(agent, command.message);
+  const freshContext = runtime.text;
   const reviewContext = command.reviewRound ? `This is manager review round ${command.reviewRound} of 5.` : "";
-  const prompt = [`TRACE_ID: ${command.commandId}`, rolePrompts[agent], `Conversation context:\n${context}`, `Original user request:\n${command.rootRequest ?? command.message}`, `Current request:\n${command.message}`, reviewContext, freshContext, resultFormats[agent]].filter(Boolean).join("\n\n");
+  const templateRequirement = runtime.templateName ? `CATALOGUE REQUIREMENT: You must adapt exactly the approved catalogue template named "${runtime.templateName}". In the landing_page_brief, include the exact line "Template ID: ${runtime.templateName}". Do not substitute a new layout or generic design direction.` : "";
+  const prompt = [`TRACE_ID: ${command.commandId}`, rolePrompts[agent], `Conversation context:\n${context}`, `Original user request:\n${command.rootRequest ?? command.message}`, `Current request:\n${command.message}`, reviewContext, templateRequirement, freshContext, resultFormats[agent]].filter(Boolean).join("\n\n");
   const startedAt = Date.now();
   const attemptPrompts: string[] = [];
   async function invoke(currentPrompt: string) {
@@ -83,6 +88,14 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
   if (missingKinds.length) result = await invoke(`${prompt}\n\nREPAIR REQUIRED: Your previous response omitted mandatory artifacts: ${missingKinds.join(", ")}. Return the exact role-specific shape now.`);
   const stillMissing = missing(result);
   if (stillMissing.length) throw new Error(`${agent} omitted mandatory artifacts after repair: ${stillMissing.join(", ")}`);
+  if (agent === "landing_page" && runtime.templateName) {
+    const brief = result.artifacts.find(artifact => artifact.kind === "landing_page_brief")?.content ?? "";
+    if (!new RegExp(`Template ID\\s*:\\s*${runtime.templateName.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`, "i").test(brief)) {
+      result = await invoke(`${prompt}\\n\\nCATALOGUE COMPLIANCE FAILED: The landing_page_brief did not include the exact selected template ID "${runtime.templateName}". Return both mandatory artifacts again and include the exact line "Template ID: ${runtime.templateName}" in the brief.`);
+      const repairedBrief = result.artifacts.find(artifact => artifact.kind === "landing_page_brief")?.content ?? "";
+      if (!new RegExp(`Template ID\\s*:\\s*${runtime.templateName.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`, "i").test(repairedBrief)) throw new Error(`Landing page did not identify approved catalogue template ${runtime.templateName}`);
+    }
+  }
   if (agent === "landing_page") {
     const html = result.artifacts.find(artifact => artifact.kind === "landing_page_html")?.content ?? "";
     try {
