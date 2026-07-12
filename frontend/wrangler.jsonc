@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "founder-exe",
+  "account_id": "acf12c8743465c65a2d06aa10536efae",
+  "compatibility_date": "2026-07-12",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
