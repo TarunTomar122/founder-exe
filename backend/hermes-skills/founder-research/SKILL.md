@@ -23,6 +23,7 @@ Produce a source-grounded research packet for the Founder orchestrator.
    - inference derived from multiple sources;
    - recommendations for Founder.
 6. Produce one `research_report` artifact with competitor table, positioning gaps, user language, risks, recommendation, and source URLs.
+7. For `UPDATE_REQUEST` or `REVISION_REQUEST`, revise the supplied report instead of restarting. Preserve supported findings, implement the requested change, refresh affected evidence, and return one complete replacement.
 
 ## Evidence rules
 

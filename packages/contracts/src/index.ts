@@ -17,6 +17,11 @@ export const AgentResultSchema = z.object({
   response: z.string().min(1),
   artifacts: z.array(ArtifactSchema).default([]),
   delegatedAgents: z.array(AgentKeySchema).default([]),
+  reviewActions: z.array(z.object({
+    agent: AgentKeySchema.exclude(["founder"]),
+    feedback: z.string().min(1).max(4_000),
+  })).max(3).default([]),
+  approved: z.boolean().default(false),
 });
 export type AgentResult = z.infer<typeof AgentResultSchema>;
 
@@ -27,6 +32,8 @@ export const WorkerCommandSchema = z.object({
   message: z.string().min(1).max(120_000),
   agent: AgentKeySchema,
   parentRunId: z.string().optional(),
+  rootRequest: z.string().min(1).max(20_000).optional(),
+  reviewRound: z.number().int().min(0).max(5).default(0),
   context: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() })).max(20),
 });
 export type WorkerCommand = z.infer<typeof WorkerCommandSchema>;

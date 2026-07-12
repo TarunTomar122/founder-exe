@@ -20,6 +20,7 @@ Produce an executable strategy and truthful platform drafts. Drafting is allowed
 4. Design a two-week sequence of measurable experiments with owner, asset, CTA, metric, stop condition, and learning goal.
 5. Draft platform-native posts only for selected channels. Adapt tone and structure; do not cross-post identical copy.
 6. Produce `gtm_strategy` and `social_posts` artifacts.
+7. For `UPDATE_REQUEST` or `REVISION_REQUEST`, revise the supplied strategy and posts instead of restarting. Preserve valid work, implement the requested change, and return both artifacts as complete replacements.
 
 ## Guardrails
 

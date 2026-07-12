@@ -27,6 +27,7 @@ type Run = {
   _id: string;
   agentKey: AgentKey;
   parentRunId?: string;
+  reviewRound?: number;
   status: "pending" | "running" | "succeeded" | "failed";
   summary?: string;
   error?: string;
@@ -48,6 +49,8 @@ type Artifact = {
 type Project = {
   _id: string;
   name: string;
+  description?: string;
+  isShowcase?: boolean;
   createdAt: number;
   conversations: Array<{ _id: string; title: string; status: string; createdAt: number; updatedAt: number }>;
 };
@@ -95,10 +98,14 @@ function statusFor(agent: AgentKey, runs: Run[]): RuntimeStatus {
 
 function missionProgress(runs: Run[]) {
   if (!runs.length) return 0;
+  const latestRun = runs[runs.length - 1];
+  if (latestRun.status === "pending") return latestRun.agentKey === "founder" ? 18 : 42;
+  if (latestRun.status === "running") return latestRun.agentKey === "founder" ? (latestRun.reviewRound ? 92 : 24) : 58;
   const initialFounder = runs.find(run => run.agentKey === "founder" && !run.parentRunId);
   const specialists = runs.filter(run => run.agentKey !== "founder");
-  const finalFounder = runs.find(run => run.agentKey === "founder" && run.parentRunId);
-  if (finalFounder?.status === "succeeded") return 100;
+  const finalFounder = [...runs].reverse().find(run => run.agentKey === "founder" && run.parentRunId);
+  const revisionsActive = runs.some(run => (run.reviewRound ?? 0) > 0 && (run.status === "pending" || run.status === "running"));
+  if (finalFounder?.status === "succeeded" && !revisionsActive) return 100;
   if (finalFounder?.status === "running") return 92;
   if (specialists.length && specialists.every(run => run.status === "succeeded")) return 82;
   if (specialists.some(run => run.status === "running")) return 58;
@@ -111,7 +118,7 @@ function Brand() {
   return <div className="brand" aria-label="Founder.exe"><strong>FOUNDER<span>.EXE</span></strong><small>AI GROWTH COMPANY</small></div>;
 }
 
-function Onboarding({ ownerKey, projects, onReady, onOpen }: { ownerKey: string; projects: Project[]; onReady: (companyId: string, companyName: string) => void; onOpen: (project: Project, conversationId?: string) => void }) {
+function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerKey: string; projects: Project[]; showcases: Project[]; onReady: (companyId: string, companyName: string) => void; onOpen: (project: Project, conversationId?: string) => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const bootstrap = useMutation(api.conversations.bootstrap);
@@ -140,6 +147,7 @@ function Onboarding({ ownerKey, projects, onReady, onOpen }: { ownerKey: string;
             <button disabled={busy}>{busy ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} Meet Founder</button>
           </form>
           {!!projects.length && <div className="recent-projects"><span>YOUR PROJECTS</span>{projects.slice(0, 4).map(project => <button type="button" key={project._id} onClick={() => onOpen(project)}><div><strong>{project.name}</strong><small>{project.conversations.length} mission{project.conversations.length === 1 ? "" : "s"}</small></div><ArrowRight size={15} /></button>)}</div>}
+          {!!showcases.length && <div className="recent-projects showcase-projects"><span>SHOWCASE RUNS</span>{showcases.map(project => <button type="button" key={project._id} onClick={() => onOpen(project)}><div><strong>{project.name} <em>FEATURED</em></strong><small>{project.description}</small></div><ArrowRight size={15} /></button>)}</div>}
         </div>
         <div className="onboarding-orbit" aria-label="Your four-agent company">
           <div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" />
@@ -200,7 +208,7 @@ function MissionStrip({ title, progress, runs, artifacts }: { title?: string; pr
   </section>;
 }
 
-function Chat({ data, message, setMessage, onSend, onPreset, sending }: any) {
+function Chat({ data, message, setMessage, onSend, onPreset, sending, readOnly }: any) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const visibleMessages = data?.messages.filter((item: any) => item.role === "user" || item.agentKey === "founder") ?? [];
   const workingRuns = (data?.runs ?? []).filter((run: Run) => ["pending", "running"].includes(run.status));
@@ -224,9 +232,10 @@ function Chat({ data, message, setMessage, onSend, onPreset, sending }: any) {
       </div>
     </div>
     <div className="composer-wrap">
-      {visibleMessages.length > 0 && <div className="quick-chips">{MISSIONS.map(item => <button key={item.label} onClick={() => onPreset(item.text)}>{item.label}</button>)}</div>}
-      <div className="composer"><Sparkle size={18} /><textarea value={message} onChange={event => setMessage(event.target.value)} onKeyDown={keyDown} placeholder="Give Founder a goal, constraint, or follow-up…" rows={1} /><button onClick={onSend} disabled={!message.trim() || sending} aria-label="Send to Founder">{sending ? <SpinnerGap className="spin" size={18} /> : <ArrowUp size={18} weight="bold" />}</button></div>
-      <p>ENTER TO SEND <span>·</span> SHIFT + ENTER FOR NEW LINE <em>Founder delegates automatically</em></p>
+      {readOnly && <div className="showcase-notice"><Sparkle size={15} /> SHOWCASE MODE · READ-ONLY APPROVED RUN</div>}
+      {!readOnly && visibleMessages.length > 0 && <div className="quick-chips">{MISSIONS.map(item => <button key={item.label} onClick={() => onPreset(item.text)}>{item.label}</button>)}</div>}
+      {!readOnly && <div className="composer"><Sparkle size={18} /><textarea value={message} onChange={event => setMessage(event.target.value)} onKeyDown={keyDown} placeholder="Give Founder a goal, constraint, or follow-up…" rows={1} /><button onClick={onSend} disabled={!message.trim() || sending} aria-label="Send to Founder">{sending ? <SpinnerGap className="spin" size={18} /> : <ArrowUp size={18} weight="bold" />}</button></div>}
+      {!readOnly && <p>ENTER TO SEND <span>·</span> SHIFT + ENTER FOR NEW LINE <em>Founder delegates automatically</em></p>}
     </div>
   </section>;
 }
@@ -278,17 +287,19 @@ function TraceRail({ runs, events }: { runs: Run[]; events: any[] }) {
     {[...runs].reverse().map(run => {
       const agent = AGENTS.find(item => item.key === run.agentKey)!;
       const status = statusFor(run.agentKey, [run]);
-      return <article className={`trace-card trace-${status}`} key={run._id}><div className="trace-rail"><i /><span /></div><div className="trace-main"><header><img src={agent.avatar} alt="" /><div><strong>{agent.name}</strong><small>{run.parentRunId ? "Delegated run" : "Orchestrator run"}</small></div><em>{run.status}</em></header>{run.summary ? <p>{run.summary}</p> : <p className="trace-wait">{run.status === "running" ? "Hermes is executing this task…" : "Waiting for worker lease…"}</p>}<footer><span><Clock size={13} /> {formatDuration(run.latencyMs)}</span><time>{formatTime(run.startedAt)}</time></footer></div></article>;
+      const runLabel = run.reviewRound ? `${run.agentKey === "founder" ? "Manager review" : "Revision"} · round ${run.reviewRound}/5` : run.parentRunId ? "Delegated run" : "Orchestrator run";
+      return <article className={`trace-card trace-${status}`} key={run._id}><div className="trace-rail"><i /><span /></div><div className="trace-main"><header><img src={agent.avatar} alt="" /><div><strong>{agent.name}</strong><small>{runLabel}</small></div><em>{run.status}</em></header>{run.summary ? <p>{run.summary}</p> : <p className="trace-wait">{run.status === "running" ? "Hermes is executing this task…" : "Waiting for worker lease…"}</p>}<footer><span><Clock size={13} /> {formatDuration(run.latencyMs)}</span><time>{formatTime(run.startedAt)}</time></footer></div></article>;
     })}
     {!!events.length && <div className="event-ledger"><span>EVENT LEDGER</span>{[...events].reverse().slice(0, 12).map(event => <div key={event._id}><i className={`event-${event.type}`} /><p>{event.detail}</p><time>{formatTime(event.createdAt)}</time></div>)}</div>}
   </div>;
 }
 
-function ProjectSwitcher({ projects, currentId, onClose, onOpen, onNewProject, onNewMission }: { projects: Project[]; currentId: string | null; onClose: () => void; onOpen: (project: Project, conversationId?: string) => void; onNewProject: () => void; onNewMission: (project: Project) => void }) {
+function ProjectSwitcher({ projects, showcases, currentId, onClose, onOpen, onNewProject, onNewMission }: { projects: Project[]; showcases: Project[]; currentId: string | null; onClose: () => void; onOpen: (project: Project, conversationId?: string) => void; onNewProject: () => void; onNewMission: (project: Project) => void }) {
   return <div className="project-overlay" role="dialog" aria-modal="true" aria-label="Projects" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="project-drawer">
       <header><div><span>FOUNDER.EXE WORKSPACES</span><h2>Your projects</h2></div><button onClick={onClose} aria-label="Close projects"><X size={19} /></button></header>
       <button className="create-project-button" onClick={onNewProject}><span>+</span><div><strong>Start a new idea</strong><small>Create a clean project and let Founder interview you</small></div><ArrowRight size={17} /></button>
+      {!!showcases.length && <div className="showcase-drawer-section"><span>FEATURED SHOWCASE</span>{showcases.map(project => <button key={project._id} onClick={() => onOpen(project)}><Sparkle size={17} /><div><strong>{project.name}</strong><small>{project.description}</small></div><ArrowRight size={16} /></button>)}</div>}
       <div className="project-list">{projects.map(project => <article className={project._id === currentId ? "active" : ""} key={project._id}>
         <button className="project-main" onClick={() => onOpen(project)}><div><span>{project._id === currentId ? "ACTIVE PROJECT" : "PROJECT"}</span><strong>{project.name}</strong><small>{project.conversations.length} saved mission{project.conversations.length === 1 ? "" : "s"}</small></div><ArrowRight size={16} /></button>
         <div className="project-missions">{project.conversations.map(conversation => <button key={conversation._id} onClick={() => onOpen(project, conversation._id)}><i /><div><strong>{conversation.title}</strong><small>{new Date(conversation.updatedAt).toLocaleDateString()} · {conversation.status}</small></div></button>)}<button className="new-mission" onClick={() => onNewMission(project)}>+ NEW MISSION</button></div>
@@ -305,6 +316,7 @@ export function App() {
   });
   const [companyId, setCompanyId] = useState<string | null>(() => localStorage.getItem("founder.companyId"));
   const [companyName, setCompanyName] = useState(() => localStorage.getItem("founder.companyName") || "Your company");
+  const [isShowcase, setIsShowcase] = useState(() => localStorage.getItem("founder.isShowcase") === "true");
   const [conversationId, setConversationId] = useState<string | null>(() => localStorage.getItem("founder.conversationId"));
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -316,28 +328,30 @@ export function App() {
   const sendMessage = useMutation(api.conversations.sendMessage);
   const data = useQuery(api.conversations.getConversation, conversationId ? { conversationId: conversationId as never } : "skip") as any;
   const projects = (useQuery(api.conversations.listProjects, { ownerKey }) as Project[] | undefined) ?? [];
+  const showcases = (useQuery(api.conversations.listShowcases, {}) as Project[] | undefined) ?? [];
   const runs: Run[] = data?.runs ?? [];
   const artifacts: Artifact[] = data?.artifacts ?? [];
   const progress = missionProgress(runs);
 
-  useEffect(() => { if (data?.company?.name) setCompanyName(data.company.name); }, [data?.company?.name]);
+  useEffect(() => { if (data?.company?.name && !isShowcase) setCompanyName(data.company.name); }, [data?.company?.name, isShowcase]);
   useEffect(() => { const active = [...runs].reverse().find(run => run.status === "running"); if (active) setSelectedAgent(active.agentKey); }, [runs.map(run => `${run._id}:${run.status}`).join("|")]);
 
   function ready(id: string, name: string) {
     localStorage.setItem("founder.companyId", id); localStorage.setItem("founder.companyName", name);
-    setCompanyId(id); setCompanyName(name);
+    localStorage.removeItem("founder.isShowcase"); setIsShowcase(false); setCompanyId(id); setCompanyName(name);
   }
 
   function openProject(project: Project, selectedConversationId?: string) {
     const nextConversation = selectedConversationId ?? project.conversations[0]?._id ?? null;
     localStorage.setItem("founder.companyId", project._id); localStorage.setItem("founder.companyName", project.name);
+    localStorage.setItem("founder.isShowcase", String(!!project.isShowcase)); setIsShowcase(!!project.isShowcase);
     if (nextConversation) localStorage.setItem("founder.conversationId", nextConversation); else localStorage.removeItem("founder.conversationId");
     setCompanyId(project._id); setCompanyName(project.name); setConversationId(nextConversation); setShowProjects(false);
   }
 
   function newProject() {
-    localStorage.removeItem("founder.companyId"); localStorage.removeItem("founder.companyName"); localStorage.removeItem("founder.conversationId");
-    setCompanyId(null); setCompanyName("Your company"); setConversationId(null); setShowProjects(false);
+    localStorage.removeItem("founder.companyId"); localStorage.removeItem("founder.companyName"); localStorage.removeItem("founder.conversationId"); localStorage.removeItem("founder.isShowcase");
+    setCompanyId(null); setCompanyName("Your company"); setConversationId(null); setIsShowcase(false); setShowProjects(false);
   }
 
   function newMission(project: Project) {
@@ -347,7 +361,7 @@ export function App() {
 
   async function dispatch(text = message) {
     const value = text.trim();
-    if (!value || !companyId || sending) return;
+    if (!value || !companyId || sending || isShowcase) return;
     setSending(true);
     try {
       if (!conversationId) {
@@ -358,18 +372,18 @@ export function App() {
     } finally { setSending(false); }
   }
 
-  if (!companyId) return <Onboarding ownerKey={ownerKey} projects={projects} onReady={ready} onOpen={openProject} />;
+  if (!companyId) return <Onboarding ownerKey={ownerKey} projects={projects} showcases={showcases} onReady={ready} onOpen={openProject} />;
 
   return <main className="app-shell">
-    <header className="topbar"><Brand /><button className="company-label" onClick={() => setShowProjects(true)}><span>PROJECT</span><strong>{companyName}</strong><small>SWITCH ▾</small></button><div className="runtime-state"><i /> CLOUD RUNTIME <b>ONLINE</b></div><button className="new-idea-button" onClick={newProject}>NEW PROJECT</button><button className="avatar-button" title="Local founder profile"><img src="/agents/founder_agent.png" alt="Founder profile" /></button></header>
+    <header className="topbar"><Brand /><button className="company-label" onClick={() => setShowProjects(true)}><span>{isShowcase ? "SHOWCASE" : "PROJECT"}</span><strong>{companyName}</strong><small>SWITCH ▾</small></button><div className="runtime-state"><i /> CLOUD RUNTIME <b>ONLINE</b></div><button className="new-idea-button" onClick={newProject}>NEW PROJECT</button><button className="avatar-button" title="Local founder profile"><img src="/agents/founder_agent.png" alt="Founder profile" /></button></header>
     <MissionStrip title={data?.conversation?.title} progress={progress} runs={runs} artifacts={artifacts} />
     <div className="app-grid">
       <aside className="company-column"><AgentMap runs={runs} selected={selectedAgent} onSelect={setSelectedAgent} /><AgentDetail agentKey={selectedAgent} runs={runs} artifacts={artifacts} /></aside>
-      <Chat data={data} message={message} setMessage={setMessage} onSend={() => dispatch()} onPreset={(text: string) => { setMessage(text); void dispatch(text); }} sending={sending} />
+      <Chat data={data} message={message} setMessage={setMessage} onSend={() => dispatch()} onPreset={(text: string) => { setMessage(text); void dispatch(text); }} sending={sending} readOnly={isShowcase} />
       <aside className="evidence-panel panel"><div className="rail-tabs"><button className={railTab === "artifacts" ? "active" : ""} onClick={() => setRailTab("artifacts")}><FileText size={15} /> OUTPUTS <b>{artifacts.length}</b></button><button className={railTab === "trace" ? "active" : ""} onClick={() => setRailTab("trace")}><Atom size={15} /> TRACE <b>{runs.length}</b></button></div>{railTab === "artifacts" ? <ArtifactRail artifacts={artifacts} onOpen={setPreview} /> : <TraceRail runs={runs} events={data?.events ?? []} />}</aside>
     </div>
     <footer className="system-footer"><span><i /> SYSTEM HEALTHY</span><span>CONVEX // DURABLE STATE</span><span>HERMES // LOCAL WORKER</span><span>LINKUP // SEARCH READY</span><time>{new Date().toISOString().slice(0, 10)}</time></footer>
     {preview && <ArtifactPreview artifact={preview} onClose={() => setPreview(null)} />}
-    {showProjects && <ProjectSwitcher projects={projects} currentId={companyId} onClose={() => setShowProjects(false)} onOpen={openProject} onNewProject={newProject} onNewMission={newMission} />}
+    {showProjects && <ProjectSwitcher projects={projects} showcases={showcases} currentId={companyId} onClose={() => setShowProjects(false)} onOpen={openProject} onNewProject={newProject} onNewMission={newMission} />}
   </main>;
 }

@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { resultFormats, rolePrompts } from "./prompts.js";
 import { searchLinkup } from "./linkup.js";
 import { selectTemplates } from "./templates.js";
+import { sanitizePreviewHtml } from "./cloudflare.js";
 
 const exec = promisify(execFile);
 const skillByAgent: Record<AgentKey, string> = {
@@ -32,7 +33,8 @@ function extractJson(text: string) {
 export async function runHermes(agent: AgentKey, command: WorkerCommand) {
   const context = command.context.map((item) => `${item.role}: ${item.content}`).join("\n");
   const freshContext = await runtimeContext(agent, command.message);
-  const prompt = [rolePrompts[agent], `Conversation context:\n${context}`, `Current request:\n${command.message}`, freshContext, resultFormats[agent]].filter(Boolean).join("\n\n");
+  const reviewContext = command.reviewRound ? `This is manager review round ${command.reviewRound} of 5.` : "";
+  const prompt = [rolePrompts[agent], `Conversation context:\n${context}`, `Original user request:\n${command.rootRequest ?? command.message}`, `Current request:\n${command.message}`, reviewContext, freshContext, resultFormats[agent]].filter(Boolean).join("\n\n");
   const startedAt = Date.now();
   async function invoke(currentPrompt: string) {
     const args = ["--skills", skillByAgent[agent], "-t", "skills", "-z", currentPrompt];
@@ -42,7 +44,14 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
       env: { ...process.env, LINKUP_API_KEY: config.LINKUP_API_KEY, TEMPLATE_LIBRARY_PATH: config.TEMPLATE_LIBRARY_PATH },
     });
     if (stderr.trim()) console.warn("Hermes stderr:", stderr.slice(0, 500));
-    return AgentResultSchema.parse(extractJson(stdout));
+    const raw = extractJson(stdout) as Record<string, unknown>;
+    if (agent === "founder") {
+      // Founder communicates through chat; specialist artifacts are the durable outputs.
+      // Dropping its optional recap artifact prevents a harmless formatting mistake from
+      // suppressing the final user-facing response after all specialist work has finished.
+      raw.artifacts = [];
+    }
+    return AgentResultSchema.parse(raw);
   }
   function missing(result: ReturnType<typeof AgentResultSchema.parse>) {
     const kinds = new Set(result.artifacts.map(artifact => artifact.kind));
@@ -55,11 +64,22 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
   try {
     result = await invoke(prompt);
   } catch {
-    result = await invoke(`${prompt}\n\nSCHEMA REPAIR REQUIRED: Return valid JSON matching the exact role-specific shape. Do not omit kind, title, content, sourceUrls, or delegatedAgents. For Founder clarification/delegation/final synthesis, use artifacts: [].`);
+    result = await invoke(`${prompt}\n\nSCHEMA REPAIR REQUIRED: Return valid JSON matching the exact role-specific shape. Do not omit required fields. For Founder clarification or delegation, use artifacts: [], reviewActions: [], approved: false.`);
   }
   const missingKinds = missing(result);
   if (missingKinds.length) result = await invoke(`${prompt}\n\nREPAIR REQUIRED: Your previous response omitted mandatory artifacts: ${missingKinds.join(", ")}. Return the exact role-specific shape now.`);
   const stillMissing = missing(result);
   if (stillMissing.length) throw new Error(`${agent} omitted mandatory artifacts after repair: ${stillMissing.join(", ")}`);
+  if (agent === "landing_page") {
+    const html = result.artifacts.find(artifact => artifact.kind === "landing_page_html")?.content ?? "";
+    try {
+      sanitizePreviewHtml(html);
+    } catch (error) {
+      const defect = error instanceof Error ? error.message : "HTML validation failed";
+      result = await invoke(`${prompt}\n\nDETERMINISTIC HTML REVIEW FAILED: ${defect}. Repair the landing page against this exact defect. Return both mandatory landing artifacts again. Use actual newlines and never simulate a successful form submission.`);
+      const repairedHtml = result.artifacts.find(artifact => artifact.kind === "landing_page_html")?.content ?? "";
+      sanitizePreviewHtml(repairedHtml);
+    }
+  }
   return { result, latencyMs: Date.now() - startedAt };
 }
