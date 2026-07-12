@@ -25,6 +25,26 @@ export const AgentResultSchema = z.object({
 });
 export type AgentResult = z.infer<typeof AgentResultSchema>;
 
+export const RunTraceSchema = z.object({
+  prompt: z.string(),
+  attemptPrompts: z.array(z.string()).max(4),
+  response: z.string(),
+  model: z.string().nullable(),
+  provider: z.string().nullable(),
+  sessionIds: z.array(z.string()),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  reasoningTokens: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative(),
+  actualCostUsd: z.number().nonnegative().nullable(),
+  apiCallCount: z.number().int().nonnegative(),
+  toolCallCount: z.number().int().nonnegative(),
+  attemptCount: z.number().int().positive(),
+});
+export type RunTrace = z.infer<typeof RunTraceSchema>;
+
 export const WorkerCommandSchema = z.object({
   commandId: z.string(),
   conversationId: z.string(),

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { AgentResultSchema, type AgentKey, type WorkerCommand } from "@founder/contracts";
 import { config } from "./config.js";
 import { resultFormats, rolePrompts } from "./prompts.js";
@@ -34,9 +35,11 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
   const context = command.context.map((item) => `${item.role}: ${item.content}`).join("\n");
   const freshContext = await runtimeContext(agent, command.message);
   const reviewContext = command.reviewRound ? `This is manager review round ${command.reviewRound} of 5.` : "";
-  const prompt = [rolePrompts[agent], `Conversation context:\n${context}`, `Original user request:\n${command.rootRequest ?? command.message}`, `Current request:\n${command.message}`, reviewContext, freshContext, resultFormats[agent]].filter(Boolean).join("\n\n");
+  const prompt = [`TRACE_ID: ${command.commandId}`, rolePrompts[agent], `Conversation context:\n${context}`, `Original user request:\n${command.rootRequest ?? command.message}`, `Current request:\n${command.message}`, reviewContext, freshContext, resultFormats[agent]].filter(Boolean).join("\n\n");
   const startedAt = Date.now();
+  const attemptPrompts: string[] = [];
   async function invoke(currentPrompt: string) {
+    attemptPrompts.push(currentPrompt);
     const args = ["--skills", skillByAgent[agent], "-t", "skills", "-z", currentPrompt];
     if (config.HERMES_MODEL) args.push("--model", config.HERMES_MODEL);
     const { stdout, stderr } = await exec(config.HERMES_BIN, args, {
@@ -50,6 +53,16 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
       // Dropping its optional recap artifact prevents a harmless formatting mistake from
       // suppressing the final user-facing response after all specialist work has finished.
       raw.artifacts = [];
+      if (Array.isArray(raw.reviewActions)) {
+        const normalized = raw.reviewActions.flatMap((action) => {
+          if (action && typeof action === "object" && "agent" in action && "feedback" in action) return [action];
+          if (typeof action !== "string") return [];
+          const lower = action.toLowerCase();
+          const target = lower.includes("landing") || lower.includes("page") || lower.includes("html") ? "landing_page" : lower.includes("gtm") || lower.includes("social") || lower.includes("launch") ? "go_to_market" : lower.includes("research") || lower.includes("source") || lower.includes("competitor") ? "research" : null;
+          return target ? [{ agent: target, feedback: action }] : [];
+        });
+        raw.reviewActions = normalized.slice(0, 3);
+      }
     }
     return AgentResultSchema.parse(raw);
   }
@@ -81,5 +94,25 @@ export async function runHermes(agent: AgentKey, command: WorkerCommand) {
       sanitizePreviewHtml(repairedHtml);
     }
   }
-  return { result, latencyMs: Date.now() - startedAt };
+  const emptyUsage = { sessionIds: [], model: null, provider: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, estimatedCostUsd: 0, actualCostUsd: null, apiCallCount: 0, toolCallCount: 0 };
+  let usage = emptyUsage;
+  try {
+    const usageScript = fileURLToPath(new URL("../scripts/hermes-usage.py", import.meta.url));
+    const stateDatabase = `${process.env.HOME ?? "/home/ubuntu"}/.hermes/state.db`;
+    const { stdout } = await exec("python3", [usageScript, command.commandId, stateDatabase], { timeout: 15_000, maxBuffer: 200_000 });
+    usage = { ...emptyUsage, ...JSON.parse(stdout) };
+  } catch (error) {
+    console.warn("Hermes usage lookup failed:", error instanceof Error ? error.message : error);
+  }
+  return {
+    result,
+    latencyMs: Date.now() - startedAt,
+    trace: {
+      prompt: attemptPrompts.at(-1) ?? prompt,
+      attemptPrompts: attemptPrompts.map(value => value.slice(0, 120_000)),
+      response: result.response,
+      ...usage,
+      attemptCount: attemptPrompts.length,
+    },
+  };
 }

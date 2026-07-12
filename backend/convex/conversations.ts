@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 
 const agentKey = v.union(v.literal("founder"), v.literal("research"), v.literal("landing_page"), v.literal("go_to_market"));
+const runTrace = v.object({ prompt: v.string(), attemptPrompts: v.array(v.string()), response: v.string(), model: v.union(v.string(), v.null()), provider: v.union(v.string(), v.null()), sessionIds: v.array(v.string()), inputTokens: v.number(), outputTokens: v.number(), cacheReadTokens: v.number(), cacheWriteTokens: v.number(), reasoningTokens: v.number(), estimatedCostUsd: v.number(), actualCostUsd: v.union(v.number(), v.null()), apiCallCount: v.number(), toolCallCount: v.number(), attemptCount: v.number() });
 
 export const bootstrap = mutation({
   args: { name: v.string(), ownerKey: v.string() },
@@ -36,14 +37,19 @@ export const listProjects = query({
 export const listShowcases = query({
   args: {},
   handler: async (ctx) => {
-    const companies = await ctx.db.query("companies").withIndex("by_owner", q => q.eq("ownerKey", "qa-loop-1783845762")).collect();
+    const showcaseOwners = new Map([
+      ["qa-loop-1783845762", { name: "Draftlane", description: "Reviewed launch kit · 3 manager rounds · live landing page" }],
+      ["trace-qa-1783848939", { name: "Trace Lab", description: "Token-level observability · citation revision loop · approved result" }],
+    ]);
+    const companies = (await Promise.all([...showcaseOwners.keys()].map(ownerKey => ctx.db.query("companies").withIndex("by_owner", q => q.eq("ownerKey", ownerKey)).collect()))).flat();
     return Promise.all(companies.map(async company => {
       const conversations = await ctx.db.query("conversations").withIndex("by_company", q => q.eq("companyId", company._id)).collect();
       conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+      const showcase = showcaseOwners.get(company.ownerKey ?? "")!;
       return {
         _id: company._id,
-        name: "Draftlane",
-        description: "Reviewed launch kit · 3 manager rounds · live landing page",
+        name: showcase.name,
+        description: showcase.description,
         isShowcase: true,
         createdAt: company.createdAt,
         conversations: conversations.map(({ _id, title, status, createdAt, updatedAt }) => ({ _id, title, status, createdAt, updatedAt })),
@@ -101,7 +107,7 @@ export const enqueue = internalMutation({
     const now = Date.now();
     const reviewRound = args.reviewRound ?? 0;
     const commandId = await ctx.db.insert("workerCommands", { conversationId: args.conversationId, agentKey: args.agent, message: args.message, rootRequest: args.rootRequest ?? args.message, reviewRound, context: messages.map(({ role, content }) => ({ role, content })), parentRunId: args.parentRunId, status: "pending", createdAt: now, updatedAt: now });
-    await ctx.db.insert("agentRuns", { conversationId: args.conversationId, commandId, agentKey: args.agent, parentRunId: args.parentRunId, reviewRound, status: "pending", startedAt: now });
+    await ctx.db.insert("agentRuns", { conversationId: args.conversationId, commandId, agentKey: args.agent, parentRunId: args.parentRunId, reviewRound, status: "pending", queuedAt: now, startedAt: now });
     await ctx.db.insert("events", { conversationId: args.conversationId, type: reviewRound ? "agent_revision_queued" : "agent_queued", detail: `${args.agent} queued${reviewRound ? ` for review round ${reviewRound}` : ""}`, createdAt: now });
   },
 });
@@ -121,13 +127,13 @@ export const leaseNext = internalMutation({
 });
 
 export const recordResult = internalMutation({
-  args: { commandId: v.id("workerCommands"), agent: agentKey, result: v.object({ summary: v.string(), response: v.string(), artifacts: v.array(v.object({ kind: v.string(), title: v.string(), content: v.string(), sourceUrls: v.array(v.string()) })), delegatedAgents: v.array(agentKey), reviewActions: v.array(v.object({ agent: agentKey, feedback: v.string() })), approved: v.boolean() }), latencyMs: v.number() },
+  args: { commandId: v.id("workerCommands"), agent: agentKey, result: v.object({ summary: v.string(), response: v.string(), artifacts: v.array(v.object({ kind: v.string(), title: v.string(), content: v.string(), sourceUrls: v.array(v.string()) })), delegatedAgents: v.array(agentKey), reviewActions: v.array(v.object({ agent: agentKey, feedback: v.string() })), approved: v.boolean() }), latencyMs: v.number(), trace: runTrace },
   handler: async (ctx, args) => {
     const command = await ctx.db.get(args.commandId); if (!command) throw new Error("Unknown command");
     const run = await ctx.db.query("agentRuns").withIndex("by_command", q => q.eq("commandId", args.commandId)).unique(); if (!run) throw new Error("Missing run");
     const now = Date.now();
     await ctx.db.patch(args.commandId, { status: "succeeded", updatedAt: now });
-    await ctx.db.patch(run._id, { status: "succeeded", summary: args.result.summary, latencyMs: args.latencyMs, completedAt: now });
+    await ctx.db.patch(run._id, { status: "succeeded", summary: args.result.summary, latencyMs: args.latencyMs, trace: args.trace, completedAt: now });
     await ctx.db.insert("messages", { conversationId: command.conversationId, role: "assistant", agentKey: args.agent, content: args.result.response, createdAt: now });
     for (const artifact of args.result.artifacts) await ctx.db.insert("artifacts", { conversationId: command.conversationId, runId: run._id, ...artifact, createdAt: now });
     await ctx.db.insert("events", { conversationId: command.conversationId, type: "agent_completed", detail: `${args.agent} completed`, createdAt: now });
@@ -219,7 +225,7 @@ export const getConversation = query({
       runs,
       artifacts,
       events,
-      commands: commands.map(({ _id, agentKey, parentRunId, status, error, createdAt, updatedAt }) => ({ _id, agentKey, parentRunId, status, error, createdAt, updatedAt })),
+      commands: commands.map(({ _id, agentKey, message, rootRequest, context, reviewRound, parentRunId, status, error, createdAt, updatedAt }) => ({ _id, agentKey, message, rootRequest, context, reviewRound, parentRunId, status, error, createdAt, updatedAt })),
     };
   },
 });

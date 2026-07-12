@@ -11,6 +11,7 @@ import {
   CirclesThreePlus,
   Clock,
   Code,
+  DownloadSimple,
   FileText,
   Files,
   Globe,
@@ -32,8 +33,38 @@ type AgentKey = "founder" | "research" | "landing_page" | "go_to_market";
 type RuntimeStatus = "ready" | "queued" | "working" | "complete" | "error";
 type WorkspaceView = "map" | "team" | "tasks" | "outputs";
 
+type RunTrace = {
+  prompt: string;
+  attemptPrompts: string[];
+  response: string;
+  model: string | null;
+  provider: string | null;
+  sessionIds: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  estimatedCostUsd: number;
+  actualCostUsd: number | null;
+  apiCallCount: number;
+  toolCallCount: number;
+  attemptCount: number;
+};
+
+type RunCommand = {
+  _id: string;
+  message: string;
+  rootRequest?: string;
+  context: Array<{ role: "user" | "assistant"; content: string }>;
+  reviewRound?: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
 type Run = {
   _id: string;
+  commandId: string;
   agentKey: AgentKey;
   parentRunId?: string;
   reviewRound?: number;
@@ -41,6 +72,9 @@ type Run = {
   summary?: string;
   error?: string;
   latencyMs?: number;
+  queuedAt?: number;
+  trace?: RunTrace;
+  command?: RunCommand;
   startedAt: number;
   completedAt?: number;
 };
@@ -112,6 +146,32 @@ function formatDuration(milliseconds?: number) {
   if (!milliseconds) return "—";
   if (milliseconds < 1000) return `${milliseconds}ms`;
   return `${(milliseconds / 1000).toFixed(milliseconds > 10_000 ? 0 : 1)}s`;
+}
+
+function formatTokens(value?: number) {
+  if (!value) return "0";
+  return value >= 1000 ? `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)}k` : String(value);
+}
+
+function formatCost(run: Run) {
+  const value = run.trace?.actualCostUsd ?? run.trace?.estimatedCostUsd;
+  return value == null ? "—" : `$${value.toFixed(4)}`;
+}
+
+function saveTextFile(name: string, content: string, type: string) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function runMarkdown(run: Run, artifacts: Artifact[]) {
+  const command = run.command;
+  const trace = run.trace;
+  const outputs = artifacts.filter(artifact => artifact.runId === run._id);
+  return `# ${agentFor(run.agentKey).name} trace\n\n- Run: ${run._id}\n- Parent: ${run.parentRunId ?? "user"}\n- Status: ${run.status}\n- Model: ${trace?.model ?? "unavailable"}\n- Duration: ${formatDuration(run.latencyMs)}\n- Tokens: ${trace ? `${trace.inputTokens} input / ${trace.outputTokens} output / ${trace.reasoningTokens} reasoning` : "unavailable"}\n- Cost: ${formatCost(run)}\n\n## Task envelope\n\n${command?.message ?? "Unavailable for this historical run."}\n\n## Conversation context\n\n${command?.context.map(item => `**${item.role}:** ${item.content}`).join("\n\n") ?? "Unavailable."}\n\n## Exact prompt\n\n\`\`\`text\n${trace?.prompt ?? "Unavailable for this historical run."}\n\`\`\`\n\n## Reply\n\n${trace?.response ?? run.summary ?? run.error ?? "No reply recorded."}\n\n## Outputs\n\n${outputs.map(output => `- ${output.kind}: ${output.title}`).join("\n") || "None"}\n`;
 }
 
 function statusFor(agent: AgentKey, runs: Run[]): RuntimeStatus {
@@ -292,27 +352,47 @@ function EmployeeGrid({ runs, selected, onSelect }: { runs: Run[]; selected: Age
   );
 }
 
-function TaskBoard({ runs, events, onOpen }: { runs: Run[]; events: any[]; onOpen: (run: Run) => void }) {
-  const ordered = [...runs].reverse();
+function TaskBoard({ runs, events, onOpen, onExportJson, onExportMarkdown }: { runs: Run[]; events: any[]; onOpen: (run: Run) => void; onExportJson: () => void; onExportMarkdown: () => void }) {
+  const [query, setQuery] = useState("");
+  const [agentFilter, setAgentFilter] = useState<"all" | AgentKey>("all");
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const runMap = new Map(runs.map(run => [run._id, run]));
+  const depth = (run: Run) => { let value = 0; let parent = run.parentRunId ? runMap.get(run.parentRunId) : undefined; while (parent && value < 5) { value += 1; parent = parent.parentRunId ? runMap.get(parent.parentRunId) : undefined; } return value; };
+  const ordered = runs.filter(run => agentFilter === "all" || run.agentKey === agentFilter).filter(run => `${agentFor(run.agentKey).name} ${run.summary ?? ""} ${run.command?.message ?? ""} ${run.trace?.response ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+  const totalTokens = runs.reduce((sum, run) => sum + (run.trace?.inputTokens ?? 0) + (run.trace?.outputTokens ?? 0), 0);
+  const totalCost = runs.reduce((sum, run) => sum + (run.trace?.actualCostUsd ?? run.trace?.estimatedCostUsd ?? 0), 0);
+  const median = (values: number[]) => { const sorted = values.filter(Boolean).sort((a, b) => a - b); return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0; };
+  const medianLatency = median(runs.map(run => run.latencyMs ?? 0));
+  const medianTokens = median(runs.map(run => (run.trace?.inputTokens ?? 0) + (run.trace?.outputTokens ?? 0)));
+  const compared = compareIds.map(id => runMap.get(id)).filter(Boolean) as Run[];
+  function toggleCompare(id: string) { setCompareIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current.slice(-1), id]); }
   return (
     <section className="task-board" aria-label="mission tasks">
-      <div className="board-head"><p className="panel-kicker">mission tasks</p><h1>every task, live. click one to see the work.</h1></div>
+      <div className="board-head trace-board-head"><div><p className="panel-kicker">observable agent trace</p><h1>every call, message, token and handoff.</h1></div><div className="trace-export"><button onClick={onExportJson}><DownloadSimple size={14} /> json</button><button onClick={onExportMarkdown}><DownloadSimple size={14} /> markdown</button></div></div>
+      <div className="trace-totals"><div><span>runs</span><strong>{runs.length}</strong></div><div><span>tokens</span><strong>{formatTokens(totalTokens)}</strong></div><div><span>tracked cost</span><strong>${totalCost.toFixed(4)}</strong></div><div><span>failures</span><strong>{runs.filter(run => run.status === "failed").length}</strong></div></div>
+      <div className="trace-controls"><input value={query} onChange={event => setQuery(event.target.value)} placeholder="search prompts, replies, tasks…" />{(["all", ...AGENTS.map(agent => agent.key)] as const).map(key => <button className={agentFilter === key ? "active" : ""} key={key} onClick={() => setAgentFilter(key)}>{key === "all" ? "all" : agentFor(key).name}</button>)}</div>
       {!ordered.length && <div className="board-empty"><Atom size={30} /><strong>no tasks yet</strong><p>give founder a mission and every task will show up here as it runs.</p></div>}
       <div className="task-rows">
         {ordered.map((run, index) => {
           const agent = agentFor(run.agentKey);
           const state = runStateWord(run);
+          const tokens = (run.trace?.inputTokens ?? 0) + (run.trace?.outputTokens ?? 0);
+          const parent = run.parentRunId ? runMap.get(run.parentRunId) : undefined;
+          const anomaly = run.status === "failed" ? "failure" : medianLatency && (run.latencyMs ?? 0) > medianLatency * 1.75 ? "latency spike" : medianTokens && tokens > medianTokens * 1.35 ? "token spike" : null;
           return (
-            <button className={`task-row row-${state}`} key={run._id} onClick={() => onOpen(run)}>
-              <span className="task-index">{String(ordered.length - index).padStart(2, "0")}</span>
-              <img src={agent.avatar} alt="" />
-              <span className="task-copy"><strong>{agent.name} · {runLabel(run)}</strong><small>{run.parentRunId ? "handed over by founder" : "started from your message"} · {formatTime(run.startedAt)}</small></span>
-              <em className={`state-chip chip-${state}`}>{state === "working" ? <Play size={11} weight="fill" /> : state === "error" ? <WarningCircle size={12} /> : state === "complete" ? <CheckCircle size={12} /> : <Clock size={12} />}{state}</em>
-              <CaretRight size={15} className="task-caret" />
-            </button>
+            <div className={`trace-row-shell depth-${Math.min(3, depth(run))}`} key={run._id} style={{ paddingLeft: `${depth(run) * 22}px` }}>
+              <button className={`task-row row-${state}`} onClick={() => onOpen(run)}>
+                <span className="task-index">{String(index + 1).padStart(2, "0")}</span><img src={agent.avatar} alt="" />
+                <span className="task-copy"><strong>{agent.name} · {runLabel(run)}</strong><small>{parent ? `called by ${agentFor(parent.agentKey).name}` : "called by user"} · {formatDuration(run.latencyMs)} · {formatTokens(tokens)} tokens · {formatCost(run)}</small></span>
+                {anomaly && <span className="trace-alert">{anomaly}</span>}
+                <em className={`state-chip chip-${state}`}>{state === "working" ? <Play size={11} weight="fill" /> : state === "error" ? <WarningCircle size={12} /> : state === "complete" ? <CheckCircle size={12} /> : <Clock size={12} />}{state}</em><CaretRight size={15} className="task-caret" />
+              </button>
+              <button className={`compare-toggle ${compareIds.includes(run._id) ? "active" : ""}`} onClick={() => toggleCompare(run._id)}>{compareIds.includes(run._id) ? "selected" : "compare"}</button>
+            </div>
           );
         })}
       </div>
+      {compared.length === 2 && <div className="trace-compare"><header><span>run comparison</span><button onClick={() => setCompareIds([])}>clear</button></header><div>{compared.map(run => <article key={run._id}><strong>{agentFor(run.agentKey).name}</strong><small>{run._id.slice(-8)}</small><dl><div><dt>duration</dt><dd>{formatDuration(run.latencyMs)}</dd></div><div><dt>input</dt><dd>{formatTokens(run.trace?.inputTokens)}</dd></div><div><dt>output</dt><dd>{formatTokens(run.trace?.outputTokens)}</dd></div><div><dt>cost</dt><dd>{formatCost(run)}</dd></div><div><dt>attempts</dt><dd>{run.trace?.attemptCount ?? "—"}</dd></div></dl><p>{run.summary ?? run.error ?? "No summary"}</p></article>)}</div></div>}
       {!!events.length && (
         <div className="event-ledger">
           <span>what just happened</span>
@@ -393,7 +473,8 @@ function Chat({ data, message, setMessage, onSend, onPreset, sending, onOpenTask
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const messages: Message[] = data?.messages ?? [];
-  const runs: Run[] = data?.runs ?? [];
+  const commands: RunCommand[] = data?.commands ?? [];
+  const runs: Run[] = (data?.runs ?? []).map((run: Run) => ({ ...run, command: commands.find(command => command._id === run.commandId) }));
   const artifacts: Artifact[] = data?.artifacts ?? [];
   const feed = useMemo(() => buildFeed(messages, runs), [messages, runs]);
   const workingRuns = runs.filter(run => ["pending", "running"].includes(run.status));
@@ -813,6 +894,7 @@ function TaskDrawer({ run, artifacts, onClose, onOpenArtifact }: { run: Run; art
     <div className="drawer-backdrop" role="dialog" aria-modal="true" aria-label="task detail" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="task-drawer">
         <button className="drawer-close" onClick={onClose} aria-label="close task"><X size={17} /></button>
+        <div className="run-export-buttons"><button onClick={() => saveTextFile(`founder-trace-${run._id}.json`, JSON.stringify({ run, artifacts: outputs }, null, 2), "application/json")}><DownloadSimple size={13} /> JSON</button><button onClick={() => saveTextFile(`founder-trace-${run._id}.md`, runMarkdown(run, artifacts), "text/markdown")}><DownloadSimple size={13} /> Markdown</button></div>
         <div className="drawer-agent">
           <img src={agent.avatar} alt="" />
           <div><p className="panel-kicker">task file</p><h2>{agent.name} · {runLabel(run)}</h2><em className={`state-chip chip-${state}`}>{state}</em></div>
@@ -833,6 +915,21 @@ function TaskDrawer({ run, artifacts, onClose, onOpenArtifact }: { run: Run; art
           <div><span>took</span><strong>{formatDuration(run.latencyMs)}</strong></div>
           <div><span>assigned by</span><strong>{run.parentRunId ? "founder" : "you"}</strong></div>
         </div>
+        <div className="trace-telemetry-grid">
+          <div><span>model</span><strong>{run.trace?.model ?? "historical / unavailable"}</strong></div>
+          <div><span>provider</span><strong>{run.trace?.provider ?? "—"}</strong></div>
+          <div><span>input tokens</span><strong>{formatTokens(run.trace?.inputTokens)}</strong></div>
+          <div><span>output tokens</span><strong>{formatTokens(run.trace?.outputTokens)}</strong></div>
+          <div><span>cache read</span><strong>{formatTokens(run.trace?.cacheReadTokens)}</strong></div>
+          <div><span>reasoning</span><strong>{formatTokens(run.trace?.reasoningTokens)}</strong></div>
+          <div><span>API / tool calls</span><strong>{run.trace ? `${run.trace.apiCallCount} / ${run.trace.toolCallCount}` : "—"}</strong></div>
+          <div><span>tracked cost</span><strong>{formatCost(run)}</strong></div>
+        </div>
+        <details className="trace-disclosure" open><summary>message sent to agent</summary><pre>{run.command?.message ?? "Unavailable for this historical run."}</pre></details>
+        <details className="trace-disclosure"><summary>conversation context ({run.command?.context.length ?? 0} messages)</summary><div className="trace-context">{run.command?.context.map((item, index) => <p key={index}><b>{item.role}</b>{item.content}</p>) ?? <p>Unavailable.</p>}</div></details>
+        <details className="trace-disclosure"><summary>exact Hermes prompt · {run.trace?.attemptCount ?? 0} attempt{run.trace?.attemptCount === 1 ? "" : "s"}</summary><pre>{run.trace?.prompt ?? "Unavailable for this historical run."}</pre></details>
+        <details className="trace-disclosure" open><summary>reply returned by agent</summary><pre>{run.trace?.response ?? run.summary ?? run.error ?? "No reply recorded."}</pre></details>
+        {!!run.trace?.sessionIds.length && <div className="trace-session"><span>Hermes sessions</span><code>{run.trace.sessionIds.join(" · ")}</code></div>}
         <div className="drawer-section">
           <p className="panel-kicker">what it made ({outputs.length})</p>
           {!outputs.length && <p className="drawer-empty">nothing produced on this task {run.status === "succeeded" ? "— it was a thinking / handoff step." : "yet."}</p>}
@@ -915,6 +1012,17 @@ export function App() {
   const active = runs.some(run => ["pending", "running"].includes(run.status));
   const openRun = openRunId ? runs.find(run => run._id === openRunId) ?? null : null;
 
+  function exportMission(format: "json" | "markdown") {
+    const slug = (data?.conversation?.title ?? "mission").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "mission";
+    if (format === "json") {
+      saveTextFile(`founder-trace-${slug}.json`, JSON.stringify({ exportedAt: new Date().toISOString(), conversation: data?.conversation, company: data?.company, runs, messages: data?.messages ?? [], events, artifacts }, null, 2), "application/json");
+      return;
+    }
+    const totals = runs.reduce((value, run) => value + (run.trace?.inputTokens ?? 0) + (run.trace?.outputTokens ?? 0), 0);
+    const markdown = `# Founder.exe mission trace: ${data?.conversation?.title ?? "Untitled"}\n\n- Exported: ${new Date().toISOString()}\n- Runs: ${runs.length}\n- Total tokens: ${totals}\n- Sources: ${sources}\n\n${runs.map(run => runMarkdown(run, artifacts)).join("\n\n---\n\n")}`;
+    saveTextFile(`founder-trace-${slug}.md`, markdown, "text/markdown");
+  }
+
   useEffect(() => { if (data?.company?.name && !isShowcase) setCompanyName(data.company.name); }, [data?.company?.name, isShowcase]);
 
   function ready(id: string, name: string) {
@@ -982,7 +1090,7 @@ export function App() {
           </div>
           {view === "map" && <CompanyMap runs={runs} selected={selectedAgent} onSelect={key => setSelectedAgent(current => current === key ? null : key)} />}
           {view === "team" && <EmployeeGrid runs={runs} selected={selectedAgent} onSelect={key => setSelectedAgent(current => current === key ? null : key)} />}
-          {view === "tasks" && <TaskBoard runs={runs} events={events} onOpen={run => setOpenRunId(run._id)} />}
+          {view === "tasks" && <TaskBoard runs={runs} events={events} onOpen={run => setOpenRunId(run._id)} onExportJson={() => exportMission("json")} onExportMarkdown={() => exportMission("markdown")} />}
           {view === "outputs" && <OutputsBoard artifacts={artifacts} onOpen={setPreview} />}
           {(view === "map" || view === "team") && <div className="workspace-foot"><UsersThree size={15} /><span>founder.exe / {companyName}</span><strong>4 agents · convex live</strong></div>}
         </div>
