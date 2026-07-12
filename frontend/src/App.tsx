@@ -1195,7 +1195,10 @@ function BillingModal({ plan, busy, error, onClose, onCheckout, onBypass }: { pl
         </div>
         {error && <div className="billing-error"><WarningCircle size={15} /> {error}</div>}
         {plan?.plan === "builder" || plan?.plan === "internal" ? <button className="billing-cta" onClick={onClose}><Check size={17} /> {plan.plan === "internal" ? "internal access is active" : "builder is active"}</button> : <button className="billing-cta" onClick={onCheckout} disabled={busy}>{busy ? <SpinnerGap className="spin" size={17} /> : <ArrowRight size={17} />} continue to secure checkout</button>}
-        {plan?.canBypass && !plan.bypassActive && <button className="billing-bypass" onClick={onBypass} disabled={busy}><Code size={14} /> bypass for internal testing</button>}
+        {plan?.canBypass && !plan.bypassActive && <>
+          <button className="billing-bypass" onClick={onBypass} disabled={busy}><Code size={14} /> continue without payment <span>(test mode)</span></button>
+          <small className="billing-test-note">test mode — no dodo checkout or charge</small>
+        </>}
         <small>cancel anytime in dodo. usage refreshes monthly.</small>
       </section>
     </div>
