@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useAction, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { anyApi } from "convex/server";
 import {
   ArrowRight,
@@ -21,6 +21,8 @@ import {
   Play,
   RocketLaunch,
   SpinnerGap,
+  SpeakerHigh,
+  Stop,
   SquaresFour,
   UsersThree,
   WarningCircle,
@@ -107,12 +109,15 @@ type Project = {
 };
 
 type BillingPlan = {
-  plan: "free" | "builder";
-  paid: boolean;
-  canCreate: boolean;
+  plan: "free" | "builder" | "internal";
+  status: string;
   used: number;
   limit: number;
+  remaining: number;
+  canCreate: boolean;
   canBypass: boolean;
+  bypassActive: boolean;
+  nextBillingDate?: string;
 };
 
 const AGENTS: Array<{ key: AgentKey; name: string; shortName: string; role: string; avatar: string; description: string; accent: string }> = [
@@ -231,68 +236,22 @@ function StatusDot({ status }: { status: RuntimeStatus }) {
 
 /* ---------------- onboarding ---------------- */
 
-function BillingModal({ ownerKey, plan, onClose }: { ownerKey: string; plan: BillingPlan; onClose: () => void }) {
-  const [busy, setBusy] = useState<"checkout" | "bypass" | null>(null);
-  const [error, setError] = useState("");
-  const createCheckout = useAction(api.billingActions.createCheckout);
-  const activateBypass = useMutation(api.billing.activateInternalBypass);
-
-  async function checkout() {
-    setBusy("checkout"); setError("");
-    try {
-      const result = await createCheckout({ ownerKey, returnUrl: `${window.location.origin}?billing=return` });
-      window.location.assign(result.checkoutUrl);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      setError(message.includes("DODO_NOT_CONFIGURED") ? "dodo test checkout is not configured on this deployment yet." : "checkout could not start. try again in a moment.");
-      setBusy(null);
-    }
-  }
-
-  async function bypass() {
-    setBusy("bypass"); setError("");
-    try { await activateBypass({ ownerKey }); onClose(); }
-    catch { setError("this browser is not on the internal testing allowlist."); setBusy(null); }
-  }
-
-  return (
-    <div className="billing-overlay" role="dialog" aria-modal="true" aria-labelledby="billing-title">
-      <section className="billing-modal">
-        <button className="billing-close" onClick={onClose} aria-label="close"><X size={18} /></button>
-        <span className="billing-kicker">free build shipped // upgrade to continue</span>
-        <h2 id="billing-title">keep your agent company running.</h2>
-        <p>your first idea was on us. builder gives this browser up to five new companies every utc month.</p>
-        <div className="billing-price"><strong><sup>$</sup>9</strong><span>usd<br />per month</span></div>
-        <ul><li><Check size={15} /> 5 new projects each month</li><li><Check size={15} /> research, landing and gtm agents</li><li><Check size={15} /> full traces, artifacts and exports</li></ul>
-        {error && <div className="billing-error"><WarningCircle size={16} />{error}</div>}
-        <button className="billing-checkout" disabled={!!busy} onClick={checkout}>{busy === "checkout" ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} continue with dodo</button>
-        {plan.canBypass && <button className="billing-bypass" disabled={!!busy} onClick={bypass}>{busy === "bypass" ? "unlocking…" : "bypass for internal testing"}</button>}
-        <small>dodo payments · test mode until live credentials are installed</small>
-      </section>
-    </div>
-  );
-}
-
-function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerKey: string; projects: Project[]; showcases: Project[]; onReady: (companyId: string, companyName: string) => void; onOpen: (project: Project, conversationId?: string) => void }) {
+function Onboarding({ ownerKey, projects, showcases, plan, onReady, onOpen, onUpgrade }: { ownerKey: string; projects: Project[]; showcases: Project[]; plan?: BillingPlan; onReady: (companyId: string, companyName: string) => void; onOpen: (project: Project, conversationId?: string) => void; onUpgrade: () => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [billingOpen, setBillingOpen] = useState(false);
   const [error, setError] = useState("");
   const bootstrap = useMutation(api.conversations.bootstrap);
-  const plan = useQuery(api.billing.getPlan, { ownerKey }) as BillingPlan | undefined;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
-    if (plan && !plan.canCreate) { setBillingOpen(true); return; }
+    if (plan && !plan.canCreate) { onUpgrade(); return; }
     setBusy(true);
     try {
       const id = await bootstrap({ name: name.trim(), ownerKey });
       onReady(id, name.trim());
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      if (message.includes("BILLING_REQUIRED")) setBillingOpen(true);
-      else setError("could not start this company. try again in a moment.");
+    } catch {
+      setError("could not start this company. try again in a moment.");
     } finally {
       setBusy(false);
     }
@@ -300,17 +259,27 @@ function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerK
 
   return (
     <main className="onboarding-shell">
-      <header className="onboarding-header"><Brand /><span>{plan ? `${plan.plan} // ${plan.used} of ${plan.limit} builds used` : "private runtime // loading"}</span></header>
+      <header className="onboarding-header"><Brand /><span>{plan?.plan === "free" ? "your first project is free" : `${plan?.plan ?? "private"} usage active`}</span></header>
       <section className="onboarding-grid">
         <div className="onboarding-copy">
           <p className="kicker">from shower idea to real thing</p>
           <h1>dump the idea.<br /><span>watch it get built.</span></h1>
           <p className="lede">name your company, then tell founder the messy version. it will ask you the sharp questions, put research, landing and gtm to work, and show you every task as it happens.</p>
-          <form className="setup-form" onSubmit={submit}>
-            <label>idea / company name<input value={name} onChange={event => setName(event.target.value)} placeholder="my weird little idea" required autoFocus /></label>
-            <button disabled={busy}>{busy ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} meet founder</button>
-            {error && <p className="setup-error"><WarningCircle size={15} />{error}</p>}
-          </form>
+          {plan?.canCreate === false ? (
+            <div className="onboarding-paywall">
+              <span>free project used</span>
+              <strong>ready to build the next one?</strong>
+              <p>builder unlocks more monthly usage for $9. your first project stays yours.</p>
+              <button onClick={onUpgrade}>upgrade with dodo <ArrowRight size={17} /></button>
+            </div>
+          ) : (
+            <form className="setup-form" onSubmit={submit}>
+              <label>idea / company name<input value={name} onChange={event => setName(event.target.value)} placeholder="my weird little idea" required autoFocus /></label>
+              <button disabled={busy}>{busy ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} meet founder</button>
+              <small>{plan?.plan === "internal" ? "internal billing bypass is active" : plan?.plan === "builder" ? "builder usage is active" : "your first project is free. no card needed."}</small>
+              {error && <p className="setup-error"><WarningCircle size={15} />{error}</p>}
+            </form>
+          )}
           {!!projects.length && (
             <div className="recent-projects">
               <span>your companies</span>
@@ -334,7 +303,6 @@ function Onboarding({ ownerKey, projects, showcases, onReady, onOpen }: { ownerK
           <div className="orbit-label"><small>your company</small><strong>4 agents</strong><span>ready to work</span></div>
         </div>
       </section>
-      {billingOpen && plan && <BillingModal ownerKey={ownerKey} plan={plan} onClose={() => setBillingOpen(false)} />}
     </main>
   );
 }
@@ -533,7 +501,10 @@ function siteFor(outputs: Artifact[], allArtifacts: Artifact[]): SiteView | null
 
 function Chat({ data, message, setMessage, onSend, onPreset, sending, onOpenTask, onOpenArtifact, onOpenSite, readOnly }: { data: any; message: string; setMessage: (value: string) => void; onSend: () => void; onPreset: (text: string) => void; sending: boolean; onOpenTask: (run: Run) => void; onOpenArtifact: (artifact: Artifact) => void; onOpenSite: (site: SiteView) => void; readOnly?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const messages: Message[] = data?.messages ?? [];
   const commands: RunCommand[] = data?.commands ?? [];
   const runs: Run[] = (data?.runs ?? []).map((run: Run) => ({ ...run, command: commands.find(command => command._id === run.commandId) }));
@@ -556,6 +527,28 @@ function Chat({ data, message, setMessage, onSend, onPreset, sending, onOpenTask
 
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); }
+  }
+
+  function speak(id: string, content: string) {
+    if (!("speechSynthesis" in window)) { setVoiceError("voice is not supported in this browser"); return; }
+    if (speakingId === id && speechRef.current) {
+      window.speechSynthesis.cancel();
+      speechRef.current = null;
+      setSpeakingId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    setVoiceError(null);
+    setSpeakingId(id);
+    const utterance = new SpeechSynthesisUtterance(content.slice(0, 1800));
+    const voices = window.speechSynthesis.getVoices();
+    utterance.voice = voices.find(voice => /samantha|ava|daniel|google uk english/i.test(voice.name)) ?? voices.find(voice => voice.lang.startsWith("en")) ?? null;
+    utterance.rate = 1.02;
+    utterance.pitch = 0.96;
+    utterance.onend = () => { speechRef.current = null; setSpeakingId(null); };
+    utterance.onerror = () => { speechRef.current = null; setSpeakingId(null); setVoiceError("voice playback failed"); };
+    speechRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
   }
 
   return (
@@ -620,7 +613,7 @@ function Chat({ data, message, setMessage, onSend, onPreset, sending, onOpenTask
               <div className={`chat-message agent-message from-${item.agentKey}`} key={item.id}>
                 <img src={agent.avatar} alt="" />
                 <div>
-                  <span>{agent.name}</span>
+                  <div className="message-head"><span>{agent.name}</span><button onClick={() => speak(item.id, item.content)} aria-label={speakingId === item.id ? "stop voice" : `listen to ${agent.name}`} title="browser voice">{speakingId === item.id ? <Stop size={12} weight="fill" /> : <SpeakerHigh size={13} />}{speakingId === item.id ? "stop" : "listen"}</button></div>
                   <p className={isLong && !isOpen ? "clamped" : ""}>{item.content}</p>
                   {isLong && <button className="read-toggle" onClick={() => toggleExpanded(item.id)}>{isOpen ? "show less" : "read everything"}</button>}
                   {(!!files.length || !!site && !!outputs.some(artifact => isSiteKind(artifact.kind)) || !!run) && (
@@ -639,6 +632,7 @@ function Chat({ data, message, setMessage, onSend, onPreset, sending, onOpenTask
               </div>
             );
           })}
+          {voiceError && <p className="voice-error">{voiceError}</p>}
           {workingRuns.map(run => {
             const agent = agentFor(run.agentKey);
             return (
@@ -845,7 +839,7 @@ function ResultsPanel({ conversationTitle, runs, artifacts, events, onOpenTask, 
   );
 }
 
-function SettingsPanel({ companyName, companyId, conversationId, projects, onOpenProject, onSwitch, onNewIdea }: { companyName: string; companyId: string; conversationId: string | null; projects: Project[]; onOpenProject: (project: Project, conversationId?: string) => void; onSwitch: () => void; onNewIdea: () => void }) {
+function SettingsPanel({ companyName, companyId, conversationId, projects, plan, onOpenProject, onSwitch, onNewIdea, onUpgrade }: { companyName: string; companyId: string; conversationId: string | null; projects: Project[]; plan?: BillingPlan; onOpenProject: (project: Project, conversationId?: string) => void; onSwitch: () => void; onNewIdea: () => void; onUpgrade: () => void }) {
   const current = projects.find(project => project._id === companyId);
   return (
     <div className="panel-body detail-panel settings-panel">
@@ -858,6 +852,13 @@ function SettingsPanel({ companyName, companyId, conversationId, projects, onOpe
           <button onClick={onSwitch}>switch company</button>
           <button onClick={onNewIdea}>start a new idea</button>
         </div>
+      </div>
+      <div className={`billing-card ${plan?.plan !== "free" ? "is-paid" : ""}`}>
+        <div><span>{plan?.plan === "internal" ? "internal access" : plan?.plan === "builder" ? "builder plan" : "free plan"}</span><strong>{plan?.plan === "internal" ? "bypass active" : plan?.plan === "builder" ? "$9 / month" : "$0 forever"}</strong></div>
+        <p>{plan?.plan === "internal" ? "internal browser access is active. dodo checkout is bypassed." : plan?.plan === "builder" ? "more monthly usage is unlocked on this browser." : "one complete project is free. upgrade when you are ready for more usage."}</p>
+        {plan?.plan !== "internal" && <div className="usage-track"><i style={{ width: `${Math.min(100, ((plan?.used ?? 0) / (plan?.limit ?? 1)) * 100)}%` }} /></div>}
+        <small>{plan?.plan === "internal" ? `${plan.used} internal projects created` : `${plan?.used ?? 0} / ${plan?.limit ?? 1} projects used`}</small>
+        {plan?.plan === "free" && <button onClick={onUpgrade}>unlock more usage <ArrowRight size={14} /></button>}
       </div>
       {!!current?.conversations.length && (
         <div className="detail-tasks">
@@ -1008,13 +1009,13 @@ function TaskDrawer({ run, artifacts, onClose, onOpenArtifact }: { run: Run; art
   );
 }
 
-function ProjectSwitcher({ projects, showcases, currentId, onClose, onOpen, onNewProject, onNewMission }: { projects: Project[]; showcases: Project[]; currentId: string | null; onClose: () => void; onOpen: (project: Project, conversationId?: string) => void; onNewProject: () => void; onNewMission: (project: Project) => void }) {
+function ProjectSwitcher({ projects, showcases, currentId, plan, onClose, onOpen, onNewProject, onNewMission }: { projects: Project[]; showcases: Project[]; currentId: string | null; plan?: BillingPlan; onClose: () => void; onOpen: (project: Project, conversationId?: string) => void; onNewProject: () => void; onNewMission: (project: Project) => void }) {
   return (
     <div className="drawer-backdrop" role="dialog" aria-modal="true" aria-label="companies" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="task-drawer project-drawer">
         <button className="drawer-close" onClick={onClose} aria-label="close companies"><X size={17} /></button>
         <div><p className="panel-kicker">founder.exe workspaces</p><h2>your companies</h2></div>
-        <button className="create-project-button" onClick={onNewProject}><span>+</span><div><strong>start a new idea</strong><small>clean company, founder interviews you from scratch</small></div><ArrowRight size={16} /></button>
+        <button className={`create-project-button ${plan?.canCreate === false ? "is-locked" : ""}`} onClick={onNewProject}><span>+</span><div><strong>{plan?.canCreate === false ? "unlock more usage" : "start a new idea"}</strong><small>{plan?.canCreate === false ? "$9/month unlocks more usage" : plan?.plan === "free" ? "your first project is free" : "builder usage is active"}</small></div><ArrowRight size={16} /></button>
         {!!showcases.length && <div className="project-list">{showcases.map(project => <article key={project._id}><button className="project-main" onClick={() => onOpen(project)}><div><span>featured showcase</span><strong>{project.name}</strong><small>{project.description}</small></div><CheckCircle size={15} /></button></article>)}</div>}
         <div className="project-list">
           {projects.map(project => (
@@ -1039,13 +1040,37 @@ function ProjectSwitcher({ projects, showcases, currentId, onClose, onOpen, onNe
   );
 }
 
+function BillingModal({ plan, busy, error, onClose, onCheckout, onBypass }: { plan?: BillingPlan; busy: boolean; error: string | null; onClose: () => void; onCheckout: () => void; onBypass: () => void }) {
+  return (
+    <div className="billing-backdrop" role="dialog" aria-modal="true" aria-label="upgrade to builder" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="billing-modal">
+        <button className="billing-close" onClick={onClose} aria-label="close billing"><X size={17} /></button>
+        <p className="panel-kicker">builder plan</p>
+        <h2>build more than one thing.</h2>
+        <p className="billing-lede">your first project is free and stays free. builder unlocks more usage for everything you want to create.</p>
+        <div className="billing-price"><strong>$9</strong><span>usd<br />per month</span></div>
+        <div className="billing-features">
+          <p><CheckCircle size={16} weight="fill" /> more monthly usage</p>
+          <p><CheckCircle size={16} weight="fill" /> all four specialist agents</p>
+          <p><CheckCircle size={16} weight="fill" /> research, pages and launch plans saved</p>
+          <p><CheckCircle size={16} weight="fill" /> secure checkout powered by dodo</p>
+        </div>
+        {error && <div className="billing-error"><WarningCircle size={15} /> {error}</div>}
+        {plan?.plan === "builder" || plan?.plan === "internal" ? <button className="billing-cta" onClick={onClose}><Check size={17} /> {plan.plan === "internal" ? "internal access is active" : "builder is active"}</button> : <button className="billing-cta" onClick={onCheckout} disabled={busy}>{busy ? <SpinnerGap className="spin" size={17} /> : <ArrowRight size={17} />} continue to secure checkout</button>}
+        {plan?.canBypass && !plan.bypassActive && <button className="billing-bypass" onClick={onBypass} disabled={busy}><Code size={14} /> bypass for internal testing</button>}
+        <small>cancel anytime in dodo. usage refreshes monthly.</small>
+      </section>
+    </div>
+  );
+}
+
 /* ---------------- app shell ---------------- */
 
 export function App() {
   const [ownerKey] = useState(() => {
     const existing = localStorage.getItem("founder.ownerKey");
     if (existing) return existing;
-    const created = crypto.randomUUID(); localStorage.setItem("founder.ownerKey", created); return created;
+    const created = globalThis.crypto?.randomUUID?.() ?? `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`; localStorage.setItem("founder.ownerKey", created); return created;
   });
   const [companyId, setCompanyId] = useState<string | null>(() => localStorage.getItem("founder.companyId"));
   const [companyName, setCompanyName] = useState(() => localStorage.getItem("founder.companyName") || "your company");
@@ -1060,12 +1085,28 @@ export function App() {
   const [preview, setPreview] = useState<Artifact | null>(null);
   const [site, setSite] = useState<SiteView | null>(null);
   const [showProjects, setShowProjects] = useState(false);
+  const [showBilling, setShowBilling] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [billingAccess, setBillingAccess] = useState<"free" | "builder" | "internal">(() => {
+    if (new URLSearchParams(window.location.search).get("checkout") === "success") { localStorage.setItem("founder.billingAccess", "builder"); return "builder"; }
+    const saved = localStorage.getItem("founder.billingAccess");
+    return saved === "builder" || saved === "internal" ? saved : "free";
+  });
+  const [internalMode] = useState(() => {
+    const enabled = import.meta.env.DEV || localStorage.getItem("founder.internalMode") === "true" || new URLSearchParams(window.location.search).get("internal") === "1";
+    if (enabled) localStorage.setItem("founder.internalMode", "true");
+    return enabled;
+  });
   const createConversation = useMutation(api.conversations.createConversation);
   const sendMessage = useMutation(api.conversations.sendMessage);
   const data = useQuery(api.conversations.getConversation, conversationId ? { conversationId: conversationId as never } : "skip") as any;
   const projects = (useQuery(api.conversations.listProjects, { ownerKey }) as Project[] | undefined) ?? [];
   const showcases = (useQuery(api.conversations.listShowcases, {}) as Project[] | undefined) ?? [];
-  const billingPlan = useQuery(api.billing.getPlan, { ownerKey }) as BillingPlan | undefined;
+  const plan = useMemo<BillingPlan>(() => {
+    const free = billingAccess === "free";
+    return { plan: billingAccess, status: billingAccess, used: projects.length, limit: free ? 1 : 999, remaining: free ? Math.max(0, 1 - projects.length) : 999, canCreate: !free || projects.length < 1, canBypass: internalMode, bypassActive: billingAccess === "internal" };
+  }, [billingAccess, internalMode, projects.length]);
   const runs: Run[] = data?.runs ?? [];
   const artifacts: Artifact[] = data?.artifacts ?? [];
   const events: any[] = data?.events ?? [];
@@ -1087,6 +1128,13 @@ export function App() {
   }
 
   useEffect(() => { if (data?.company?.name && !isShowcase) setCompanyName(data.company.name); }, [data?.company?.name, isShowcase]);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("checkout") !== "success" && url.searchParams.get("internal") !== "1") return;
+    url.searchParams.delete("checkout");
+    url.searchParams.delete("internal");
+    window.history.replaceState({}, "", url);
+  }, []);
 
   function ready(id: string, name: string) {
     localStorage.setItem("founder.companyId", id); localStorage.setItem("founder.companyName", name);
@@ -1102,8 +1150,24 @@ export function App() {
   }
 
   function newProject() {
+    if (plan && !plan.canCreate) { setShowProjects(false); setShowBilling(true); return; }
     localStorage.removeItem("founder.companyId"); localStorage.removeItem("founder.companyName"); localStorage.removeItem("founder.conversationId"); localStorage.removeItem("founder.isShowcase");
     setCompanyId(null); setCompanyName("your company"); setConversationId(null); setIsShowcase(false); setShowProjects(false);
+  }
+
+  async function upgrade() {
+    setCheckoutBusy(true);
+    setCheckoutError(null);
+    const checkoutUrl = import.meta.env.VITE_DODO_CHECKOUT_URL;
+    if (!checkoutUrl) { setCheckoutError("add VITE_DODO_CHECKOUT_URL to frontend/.env.local"); setCheckoutBusy(false); return; }
+    window.location.assign(checkoutUrl);
+  }
+
+  function bypassBilling() {
+    setCheckoutError(null);
+    localStorage.setItem("founder.billingAccess", "internal");
+    setBillingAccess("internal");
+    setShowBilling(false);
   }
 
   function newMission(project: Project) {
@@ -1124,7 +1188,7 @@ export function App() {
     } finally { setSending(false); }
   }
 
-  if (!companyId) return <Onboarding ownerKey={ownerKey} projects={projects} showcases={showcases} onReady={ready} onOpen={openProject} />;
+  if (!companyId) return <><Onboarding ownerKey={ownerKey} projects={projects} showcases={showcases} plan={plan} onReady={ready} onOpen={openProject} onUpgrade={() => setShowBilling(true)} />{showBilling && <BillingModal plan={plan} busy={checkoutBusy} error={checkoutError} onClose={() => setShowBilling(false)} onCheckout={() => void upgrade()} onBypass={bypassBilling} />}</>;
 
   return (
     <main className="app-shell">
@@ -1133,7 +1197,7 @@ export function App() {
           <Brand />
           <button className="company-label" onClick={() => setShowProjects(true)}><span>{isShowcase ? "showcase" : "company"}</span><strong>{companyName}</strong><small>switch ▾</small></button>
           <div className="runtime"><span className={`runtime-pulse ${active ? "" : "idle"}`} />{workingCount ? `${workingCount} working` : active ? "queued" : "all quiet"}</div>
-          {billingPlan && <span className={`plan-chip plan-${billingPlan.plan}`}>{billingPlan.plan} · {billingPlan.used}/{billingPlan.limit}</span>}
+          <span className={`plan-chip plan-${plan.plan}`}>{plan.plan} · {plan.plan === "free" ? `${plan.used}/1` : "usage active"}</span>
           <button className="new-idea-button" onClick={newProject}>new idea</button>
         </header>
 
@@ -1171,14 +1235,15 @@ export function App() {
           : nav === "results"
           ? <ResultsPanel conversationTitle={data?.conversation?.title} runs={runs} artifacts={artifacts} events={events} onOpenTask={run => setOpenRunId(run._id)} onOpenArtifact={setPreview} onOpenSite={setSite} onPreset={(text: string) => { setNav("home"); setMessage(text); void dispatch(text); }} />
           : nav === "settings"
-          ? <SettingsPanel companyName={companyName} companyId={companyId} conversationId={conversationId} projects={projects} onOpenProject={openProject} onSwitch={() => setShowProjects(true)} onNewIdea={newProject} />
+          ? <SettingsPanel companyName={companyName} companyId={companyId} conversationId={conversationId} projects={projects} plan={plan} onOpenProject={openProject} onSwitch={() => setShowProjects(true)} onNewIdea={newProject} onUpgrade={() => setShowBilling(true)} />
           : <Chat data={data} message={message} setMessage={setMessage} onSend={() => dispatch()} onPreset={(text: string) => { setMessage(text); void dispatch(text); }} sending={sending} onOpenTask={run => setOpenRunId(run._id)} onOpenArtifact={setPreview} onOpenSite={setSite} readOnly={isShowcase} />}
       </aside>
 
       {openRun && <TaskDrawer run={openRun} artifacts={artifacts} onClose={() => setOpenRunId(null)} onOpenArtifact={setPreview} />}
       {site && <SiteViewer site={site} onClose={() => setSite(null)} />}
       {preview && <ArtifactPreview artifact={preview} onClose={() => setPreview(null)} />}
-      {showProjects && <ProjectSwitcher projects={projects} showcases={showcases} currentId={companyId} onClose={() => setShowProjects(false)} onOpen={openProject} onNewProject={newProject} onNewMission={newMission} />}
+      {showProjects && <ProjectSwitcher projects={projects} showcases={showcases} currentId={companyId} plan={plan} onClose={() => setShowProjects(false)} onOpen={openProject} onNewProject={newProject} onNewMission={newMission} />}
+      {showBilling && <BillingModal plan={plan} busy={checkoutBusy} error={checkoutError} onClose={() => setShowBilling(false)} onCheckout={() => void upgrade()} onBypass={bypassBilling} />}
     </main>
   );
 }

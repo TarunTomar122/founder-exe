@@ -1,7 +1,6 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { getOwnerAccess } from "./billingRules";
 
 const agentKey = v.union(v.literal("founder"), v.literal("research"), v.literal("landing_page"), v.literal("go_to_market"));
 const runTrace = v.object({ prompt: v.string(), attemptPrompts: v.array(v.string()), response: v.string(), model: v.union(v.string(), v.null()), provider: v.union(v.string(), v.null()), sessionIds: v.array(v.string()), inputTokens: v.number(), outputTokens: v.number(), cacheReadTokens: v.number(), cacheWriteTokens: v.number(), reasoningTokens: v.number(), estimatedCostUsd: v.number(), actualCostUsd: v.union(v.number(), v.null()), apiCallCount: v.number(), toolCallCount: v.number(), attemptCount: v.number() });
@@ -9,8 +8,6 @@ const runTrace = v.object({ prompt: v.string(), attemptPrompts: v.array(v.string
 export const bootstrap = mutation({
   args: { name: v.string(), ownerKey: v.string() },
   handler: async (ctx, args) => {
-    const access = await getOwnerAccess(ctx, args.ownerKey);
-    if (!access.canCreate) throw new Error("BILLING_REQUIRED");
     const now = Date.now();
     const companyId = await ctx.db.insert("companies", { ...args, createdAt: now });
     await Promise.all([

@@ -11,10 +11,10 @@ packages/contracts/       shared Zod contracts
 
 ## Initial agents
 
-- **Founder** — user-facing orchestrator. It decides which specialist(s) to delegate to and owns the final response.
-- **Research** — competitor and market analysis with cited artifacts.
-- **Landing Page** — produces a bounded landing-page brief and template-aware implementation artifact.
-- **Go-to-Market** — produces a launch strategy and platform-specific posts.
+- **Founder**: user-facing orchestrator. It decides which specialist(s) to delegate to and owns the final response.
+- **Research**: competitor and market analysis with cited artifacts.
+- **Landing Page**: produces a bounded landing-page brief and template-aware implementation artifact.
+- **Go-to-Market**: produces a launch strategy and platform-specific posts.
 
 Convex is the audit log and source of truth. The worker does not directly mutate the database: Convex dispatches a signed command, the worker executes Hermes, then it sends a signed result to Convex for validation and storage.
 
@@ -27,24 +27,10 @@ Convex is the audit log and source of truth. The worker does not directly mutate
 
 `TEMPLATE_LIBRARY_PATH` is intentionally required by the Landing Page agent. Point it at the approved VPS template/prompt directory before enabling that agent in production.
 
-## Billing
+## Billing and voice
 
-Each browser identity can create one project for free. A Builder subscription is $9/month and permits five new projects per UTC calendar month. Project creation is checked inside Convex; the frontend gate is only the user interface.
+Billing is temporarily frontend-only. Set `VITE_DODO_CHECKOUT_URL` in `frontend/.env.local` to a Dodo hosted payment link whose return URL includes `?checkout=success`. The first project is free, and Builder unlocks more usage for $9/month on the current browser.
 
-Create a recurring monthly product in Dodo Payments Test Mode, then configure the hosted Convex deployment:
+Internal mode is enabled automatically in local development. In a deployed build, open the app once with `?internal=1` to reveal the billing bypass on that browser. The bypass and Builder state are stored in local storage.
 
-```sh
-cd backend
-npx convex env set DODO_PAYMENTS_API_KEY
-npx convex env set DODO_PAYMENTS_PRODUCT_ID
-npx convex env set DODO_PAYMENTS_WEBHOOK_KEY
-npx convex env set DODO_PAYMENTS_ENVIRONMENT test_mode
-```
-
-Point the Dodo webhook at `https://YOUR_DEPLOYMENT.convex.site/billing/dodo` and subscribe to the subscription lifecycle events. The route verifies Standard Webhooks signatures and uses the checkout metadata to associate the subscription with the current browser owner key.
-
-For an internal test browser, set `BILLING_BYPASS_OWNER_KEYS` to its `localStorage.getItem("founder.ownerKey")` value. A wildcard is accepted only outside Dodo live mode:
-
-```sh
-npx convex env set BILLING_BYPASS_OWNER_KEYS '*'
-```
+Agent replies use the browser's built-in speech engine, so voice playback needs no backend key.
