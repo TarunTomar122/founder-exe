@@ -4,13 +4,20 @@ import { anyApi } from "convex/server";
 import {
   ArrowRight,
   ArrowUp,
+  ArrowsIn,
+  ArrowsOut,
   Atom,
+  Buildings,
+  CalendarDots,
   CaretRight,
+  ChartBar,
   Check,
   CheckCircle,
   CirclesThreePlus,
   Clock,
   Code,
+  Compass,
+  Copy,
   DownloadSimple,
   FileText,
   Files,
@@ -18,12 +25,19 @@ import {
   LinkSimple,
   ListChecks,
   MagnifyingGlass,
+  Megaphone,
   Play,
+  Quotes,
   RocketLaunch,
+  ShareNetwork,
+  ShieldWarning,
   SpinnerGap,
   SpeakerHigh,
   Stop,
   SquaresFour,
+  Target,
+  TrendUp,
+  Users,
   UsersThree,
   WarningCircle,
   X,
@@ -451,7 +465,7 @@ function OutputsBoard({ artifacts, onOpen }: { artifacts: Artifact[]; onOpen: (a
       <div className="outputs-grid">
         {[...artifacts].reverse().map((artifact, index) => (
           <button
-            className={`artifact-card ${artifact.kind === "landing_page_preview" ? "is-live-preview" : ""}`}
+            className={`artifact-card artifact-${artifact.kind} ${artifact.kind === "landing_page_preview" ? "is-live-preview" : ""}`}
             onClick={() => artifact.kind === "landing_page_preview" && artifact.sourceUrls[0] ? window.open(artifact.sourceUrls[0], "_blank", "noopener,noreferrer") : onOpen(artifact)}
             key={artifact._id}
           >
@@ -459,6 +473,7 @@ function OutputsBoard({ artifacts, onOpen }: { artifacts: Artifact[]; onOpen: (a
             <small>{artifact.kind === "landing_page_preview" ? "● live page — click to open" : artifact.kind.replaceAll("_", " ")}</small>
             <strong>{artifact.title}</strong>
             <p>{artifact.content.slice(0, 130)}{artifact.content.length > 130 ? "…" : ""}</p>
+            {(artifact.kind === "research_report" || artifact.kind === "gtm_strategy" || artifact.kind === "social_posts") && <div className="artifact-visual-cue"><span>{artifact.kind === "research_report" ? <ChartBar size={13} /> : <ShareNetwork size={13} />} visual report</span><div>{artifact.sourceUrls.slice(0, 4).map(url => <SourceLogo url={url} key={url} />)}</div></div>}
             <footer><span>{artifact.sourceUrls.length} sources</span><time>{formatTime(artifact.createdAt)}</time></footer>
           </button>
         ))}
@@ -885,6 +900,122 @@ function SettingsPanel({ companyName, companyId, conversationId, projects, plan,
 
 /* ---------------- overlays ---------------- */
 
+type ReportSection = { title: string; lines: string[] };
+
+function cleanMarkdown(value: string) {
+  return value.replace(/^#{1,6}\s*/, "").replace(/^[-*]\s+/, "").replace(/^\d+[.)]\s+/, "").replace(/\*\*/g, "").trim();
+}
+
+function parseReport(content: string): ReportSection[] {
+  const sections: ReportSection[] = [];
+  let current: ReportSection = { title: "overview", lines: [] };
+  for (const original of content.split("\n")) {
+    const line = original.trim();
+    const markdownHeading = line.match(/^#{1,4}\s+(.+)/);
+    const plainHeading = line.match(/^([A-Za-z][^:]{2,52}):$/);
+    if (markdownHeading || plainHeading) {
+      if (current.lines.some(Boolean)) sections.push(current);
+      current = { title: cleanMarkdown(markdownHeading?.[1] ?? plainHeading?.[1] ?? "section"), lines: [] };
+    } else if (line) current.lines.push(line);
+  }
+  if (current.lines.some(Boolean)) sections.push(current);
+  return sections.length ? sections : [{ title: "overview", lines: content.split("\n").filter(Boolean) }];
+}
+
+function sectionSlug(title: string, index: number) {
+  return `report-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || index}`;
+}
+
+function SectionIcon({ title, size = 18 }: { title: string; size?: number }) {
+  const value = title.toLowerCase();
+  if (/competitor|landscape|alternative/.test(value)) return <Buildings size={size} />;
+  if (/audience|user|customer|persona|community/.test(value)) return <Users size={size} />;
+  if (/risk|threat|warning|constraint/.test(value)) return <ShieldWarning size={size} />;
+  if (/position|gap|opportunity|recommend/.test(value)) return <Target size={size} />;
+  if (/metric|signal|market|trend|growth/.test(value)) return <TrendUp size={size} />;
+  if (/week|day|timeline|sequence|plan|experiment/.test(value)) return <CalendarDots size={size} />;
+  if (/channel|distribution|platform/.test(value)) return <ShareNetwork size={size} />;
+  if (/message|post|copy|content/.test(value)) return <Megaphone size={size} />;
+  if (/quote|language|voice/.test(value)) return <Quotes size={size} />;
+  return <Compass size={size} />;
+}
+
+function RichInline({ children }: { children: string }) {
+  const parts = children.split(/(\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<]+)/g);
+  return <>{parts.map((part, index) => {
+    const markdown = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
+    const raw = part.match(/^https?:\/\//) ? part.replace(/[),.;]+$/, "") : null;
+    if (markdown) return <a href={markdown[2]} target="_blank" rel="noreferrer" key={index}>{markdown[1]} <ArrowRight size={11} /></a>;
+    if (raw) return <a href={raw} target="_blank" rel="noreferrer" key={index}>{new URL(raw).hostname} <ArrowRight size={11} /></a>;
+    return <span key={index}>{part.replace(/\*\*/g, "")}</span>;
+  })}</>;
+}
+
+function ReportSectionBody({ lines }: { lines: string[] }) {
+  const tableLines = lines.filter(line => line.includes("|") && line.split("|").filter(Boolean).length > 1);
+  const tableRows = tableLines.map(line => line.split("|").map(cell => cleanMarkdown(cell)).filter(Boolean)).filter(row => !row.every(cell => /^:?-+:?$/.test(cell)));
+  const prose = lines.filter(line => !tableLines.includes(line));
+  return (
+    <>
+      {tableRows.length > 1 && (
+        <div className="visual-table-wrap"><table><thead><tr>{tableRows[0].map((cell, index) => <th key={index}>{cell}</th>)}</tr></thead><tbody>{tableRows.slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, index) => <td key={index}><RichInline>{cell}</RichInline></td>)}</tr>)}</tbody></table></div>
+      )}
+      <div className="visual-prose">
+        {prose.map((line, index) => {
+          const bullet = /^[-*]\s+/.test(line);
+          const numbered = /^\d+[.)]\s+/.test(line);
+          return <p className={bullet || numbered ? "visual-bullet" : ""} key={index}>{(bullet || numbered) && <b>{numbered ? line.match(/^\d+/)?.[0] : ""}</b>}<RichInline>{cleanMarkdown(line)}</RichInline></p>;
+        })}
+      </div>
+    </>
+  );
+}
+
+function SourceLogo({ url }: { url: string }) {
+  const host = new URL(url).hostname.replace(/^www\./, "");
+  return <img src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`} alt="" />;
+}
+
+function ResearchVisual({ artifact }: { artifact: Artifact }) {
+  const sections = parseReport(artifact.content);
+  const competitors = sections.find(section => /competitor|landscape|alternative/i.test(section.title));
+  const competitorRows = competitors?.lines.filter(line => line.includes("|")).length ?? 0;
+  return (
+    <div className="visual-report research-report">
+      <section className="report-hero">
+        <div><span><ChartBar size={16} /> market intelligence</span><h3>the signal, without the wall of text.</h3><p>scan the market shape, jump to a finding, then open the evidence behind it.</p></div>
+        <div className="report-stats"><div><strong>{Math.max(0, competitorRows - 2)}</strong><small>competitors mapped</small></div><div><strong>{sections.length}</strong><small>insight areas</small></div><div><strong>{artifact.sourceUrls.length}</strong><small>live sources</small></div></div>
+      </section>
+      <nav className="report-jump" aria-label="report sections">{sections.slice(0, 8).map((section, index) => <a href={`#${sectionSlug(section.title, index)}`} key={index}><SectionIcon title={section.title} size={13} /> {section.title}</a>)}</nav>
+      {!!artifact.sourceUrls.length && <div className="source-logo-rail"><span>evidence from</span>{artifact.sourceUrls.slice(0, 7).map(url => <a href={url} target="_blank" rel="noreferrer" title={new URL(url).hostname} key={url}><SourceLogo url={url} /><small>{new URL(url).hostname.replace(/^www\./, "")}</small></a>)}</div>}
+      <div className="report-section-grid">{sections.map((section, index) => {
+        const wide = /competitor|landscape|recommend|summary|overview/i.test(section.title) || section.lines.some(line => line.includes("|"));
+        return <article className={`visual-section ${wide ? "is-wide" : ""}`} id={sectionSlug(section.title, index)} key={index}><header><span><SectionIcon title={section.title} /></span><div><small>{String(index + 1).padStart(2, "0")}</small><h4>{section.title}</h4></div></header><ReportSectionBody lines={section.lines} /></article>;
+      })}</div>
+    </div>
+  );
+}
+
+function GtmVisual({ artifact }: { artifact: Artifact }) {
+  const sections = parseReport(artifact.content);
+  const isPosts = artifact.kind === "social_posts";
+  const copySection = async (section: ReportSection) => { try { await navigator.clipboard.writeText(section.lines.map(cleanMarkdown).join("\n")); } catch { /* Clipboard can be unavailable in embedded browsers. */ } };
+  return (
+    <div className={`visual-report gtm-report ${isPosts ? "social-report" : ""}`}>
+      <section className="report-hero">
+        <div><span><Megaphone size={16} /> {isPosts ? "content studio" : "launch control"}</span><h3>{isPosts ? "platform-ready posts, separated and ready to ship." : "a launch plan you can read like a campaign board."}</h3><p>{isPosts ? "each post gets its own canvas, channel cue, and copy action." : "channels, experiments, timing, metrics, and stop conditions stay visible at a glance."}</p></div>
+        <div className="report-stats"><div><strong>{sections.length}</strong><small>{isPosts ? "post blocks" : "campaign blocks"}</small></div><div><strong>{artifact.sourceUrls.length}</strong><small>references</small></div><div><strong>14</strong><small>day launch lens</small></div></div>
+      </section>
+      <nav className="report-jump" aria-label="campaign sections">{sections.slice(0, 8).map((section, index) => <a href={`#${sectionSlug(section.title, index)}`} key={index}><SectionIcon title={section.title} size={13} /> {section.title}</a>)}</nav>
+      <div className="gtm-flow">{sections.map((section, index) => {
+        const timeline = /week|day|sequence|timeline|experiment/i.test(section.title);
+        return <article className={`visual-section ${timeline ? "is-timeline" : ""} ${isPosts ? "is-post" : ""}`} id={sectionSlug(section.title, index)} key={index}><header><span><SectionIcon title={section.title} /></span><div><small>{timeline ? `phase ${index + 1}` : `block ${index + 1}`}</small><h4>{section.title}</h4></div>{isPosts && <button onClick={() => void copySection(section)} title="copy post"><Copy size={14} /> copy</button>}</header><ReportSectionBody lines={section.lines} /></article>;
+      })}</div>
+      {!!artifact.sourceUrls.length && <div className="source-logo-rail"><span>campaign references</span>{artifact.sourceUrls.slice(0, 7).map(url => <a href={url} target="_blank" rel="noreferrer" title={new URL(url).hostname} key={url}><SourceLogo url={url} /><small>{new URL(url).hostname.replace(/^www\./, "")}</small></a>)}</div>}
+    </div>
+  );
+}
+
 function ArtifactText({ content }: { content: string }) {
   return (
     <div className="artifact-document">
@@ -901,25 +1032,32 @@ function ArtifactText({ content }: { content: string }) {
 }
 
 function ArtifactPreview({ artifact, onClose }: { artifact: Artifact; onClose: () => void }) {
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    function keyDown(event: globalThis.KeyboardEvent) { if (event.key === "Escape") fullscreen ? setFullscreen(false) : onClose(); }
+    window.addEventListener("keydown", keyDown); return () => window.removeEventListener("keydown", keyDown);
+  }, [fullscreen, onClose]);
+  const isResearch = artifact.kind === "research_report";
+  const isGtm = artifact.kind === "gtm_strategy" || artifact.kind === "social_posts";
   return (
     <div className="artifact-overlay" role="dialog" aria-modal="true" aria-label={artifact.title} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-      <article className="artifact-modal">
+      <article className={`artifact-modal ${fullscreen ? "is-fullscreen" : ""} ${isResearch || isGtm ? "is-visual-report" : ""}`}>
         <header>
           <div className="artifact-modal-icon"><ArtifactIcon kind={artifact.kind} /></div>
           <div><span>{artifact.kind.replaceAll("_", " ")}</span><h2>{artifact.title}</h2></div>
-          <button onClick={onClose} aria-label="close preview"><X size={19} /></button>
+          <div className="artifact-modal-actions"><button onClick={() => saveTextFile(`${artifact.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.md`, artifact.content, "text/markdown")} aria-label="download report" title="download"><DownloadSimple size={17} /></button><button onClick={() => setFullscreen(value => !value)} aria-label={fullscreen ? "exit fullscreen" : "open fullscreen"} title={fullscreen ? "exit fullscreen" : "fullscreen"}>{fullscreen ? <ArrowsIn size={18} /> : <ArrowsOut size={18} />}</button><button onClick={onClose} aria-label="close preview"><X size={19} /></button></div>
         </header>
         <div className="artifact-meta">
           <span><Clock size={13} /> {formatTime(artifact.createdAt)}</span>
           <span><LinkSimple size={13} /> {artifact.sourceUrls.length} sources</span>
           <span><Check size={13} /> saved forever</span>
         </div>
-        <ArtifactText content={artifact.content} />
+        {isResearch ? <ResearchVisual artifact={artifact} /> : isGtm ? <GtmVisual artifact={artifact} /> : <ArtifactText content={artifact.content} />}
         {!!artifact.sourceUrls.length && (
           <footer>
             <span>sources</span>
             {artifact.sourceUrls.map((url, index) => (
-              <a href={url} target="_blank" rel="noreferrer" key={url}><b>{String(index + 1).padStart(2, "0")}</b><span>{new URL(url).hostname}</span><ArrowRight size={13} /></a>
+              <a href={url} target="_blank" rel="noreferrer" key={url}><b>{String(index + 1).padStart(2, "0")}</b><SourceLogo url={url} /><span>{new URL(url).hostname}</span><ArrowRight size={13} /></a>
             ))}
           </footer>
         )}
