@@ -1,0 +1,17 @@
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+const agentKey = v.union(v.literal("founder"), v.literal("research"), v.literal("landing_page"), v.literal("go_to_market"));
+const commandStatus = v.union(v.literal("pending"), v.literal("running"), v.literal("succeeded"), v.literal("failed"));
+
+export default defineSchema({
+  waitlist: defineTable({ email: v.string(), normalizedEmail: v.string(), createdAt: v.number(), source: v.string() }).index("by_normalized_email", ["normalizedEmail"]),
+  companies: defineTable({ name: v.string(), ownerKey: v.optional(v.string()), website: v.optional(v.string()), createdAt: v.number() }).index("by_owner", ["ownerKey"]),
+  agents: defineTable({ companyId: v.id("companies"), key: agentKey, name: v.string(), role: v.string(), status: v.union(v.literal("ready"), v.literal("working"), v.literal("error")), createdAt: v.number() }).index("by_company_key", ["companyId", "key"]),
+  conversations: defineTable({ companyId: v.id("companies"), title: v.string(), status: v.union(v.literal("active"), v.literal("complete")), createdAt: v.number(), updatedAt: v.number() }).index("by_company", ["companyId"]),
+  messages: defineTable({ conversationId: v.id("conversations"), role: v.union(v.literal("user"), v.literal("assistant")), agentKey: v.optional(agentKey), content: v.string(), createdAt: v.number() }).index("by_conversation_created", ["conversationId", "createdAt"]),
+  agentRuns: defineTable({ conversationId: v.id("conversations"), commandId: v.id("workerCommands"), agentKey, parentRunId: v.optional(v.id("agentRuns")), status: commandStatus, summary: v.optional(v.string()), latencyMs: v.optional(v.number()), error: v.optional(v.string()), synthesisQueuedAt: v.optional(v.number()), startedAt: v.number(), completedAt: v.optional(v.number()) }).index("by_conversation", ["conversationId"]).index("by_command", ["commandId"]),
+  artifacts: defineTable({ conversationId: v.id("conversations"), runId: v.id("agentRuns"), kind: v.string(), title: v.string(), content: v.string(), sourceUrls: v.array(v.string()), createdAt: v.number() }).index("by_conversation", ["conversationId"]),
+  events: defineTable({ conversationId: v.id("conversations"), type: v.string(), detail: v.string(), createdAt: v.number() }).index("by_conversation_created", ["conversationId", "createdAt"]),
+  workerCommands: defineTable({ conversationId: v.id("conversations"), agentKey, message: v.string(), context: v.array(v.object({ role: v.union(v.literal("user"), v.literal("assistant")), content: v.string() })), parentRunId: v.optional(v.id("agentRuns")), status: commandStatus, error: v.optional(v.string()), createdAt: v.number(), updatedAt: v.number() }).index("by_status", ["status"]),
+});

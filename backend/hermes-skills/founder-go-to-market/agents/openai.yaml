@@ -1,0 +1,4 @@
+interface:
+  display_name: "Founder Go-to-Market"
+  short_description: "Create evidence-backed GTM strategy and platform posts"
+  default_prompt: "Build a go-to-market strategy and platform-specific posts."

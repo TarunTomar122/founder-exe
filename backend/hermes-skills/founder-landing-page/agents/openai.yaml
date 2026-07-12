@@ -1,0 +1,4 @@
+interface:
+  display_name: "Founder Landing Page"
+  short_description: "Select templates and create evidence-backed landing pages"
+  default_prompt: "Create a landing-page artifact from an approved template."

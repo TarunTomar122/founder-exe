@@ -1,0 +1,26 @@
+{
+  "name": "@founder/backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "convex:dev": "convex dev"
+  },
+  "dependencies": {
+    "@founder/contracts": "*",
+    "dotenv": "^16.5.0",
+    "fastify": "^5.2.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.2",
+    "convex": "^1.22.6",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "wrangler": "^4.110.0"
+  }
+}

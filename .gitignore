@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+.env.local
+convex/_generated
+backend/convex/_generated
+backend/landing_page_brief.json

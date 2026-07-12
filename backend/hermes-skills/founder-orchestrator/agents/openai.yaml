@@ -1,0 +1,4 @@
+interface:
+  display_name: "Founder Orchestrator"
+  short_description: "Delegate founder missions to three bounded specialists"
+  default_prompt: "Coordinate this founder mission with the appropriate specialists."

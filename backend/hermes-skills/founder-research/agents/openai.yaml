@@ -1,0 +1,4 @@
+interface:
+  display_name: "Founder Research"
+  short_description: "Research competitors and markets with cited evidence"
+  default_prompt: "Research this market and return a cited competitor analysis."
