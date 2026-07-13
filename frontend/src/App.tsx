@@ -154,6 +154,14 @@ export function App() {
     );
   const openRun = openRunId ? runs.find(run => run._id === openRunId) ?? null : null;
   const currentStage = data?.conversation?.stage as WorkflowStage | undefined;
+  const railRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const activeButton = rail.querySelector<HTMLButtonElement>("button.active");
+    activeButton?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  }, [stage]);
 
   function exportMission(format: "json" | "markdown") {
     const slug =
@@ -425,7 +433,7 @@ export function App() {
       </header>
 
       <div className="shell-body">
-        <nav className="stage-rail" aria-label="Stages">
+        <nav className="stage-rail" aria-label="Stages" ref={railRef}>
           {STAGE_TABS.map(item => {
             const Icon = item.icon;
             const dot =

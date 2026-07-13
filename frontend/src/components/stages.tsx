@@ -827,7 +827,7 @@ export function SignalsStage({ validation, campaign }: { validation?: Validation
   const isLive = campaign?.status === "live";
   return (
     <>
-      <section className="verdict" style={{ paddingLeft: 20 }}>
+      <section className="verdict">
         <p className="kicker">Live validation</p>
         <h3 style={{ fontSize: 20 }}>{isLive ? "The market is answering now." : "Measurement starts when you approve launch."}</h3>
         <p>Views, intent clicks and real waitlist signups flow back from the stable Cloudflare page into Convex.</p>
