@@ -14,7 +14,7 @@ export type TemplateCandidate = {
  * The model may adapt the prompt's visual language, but it must not invent a
  * design direction outside the catalogue.
  */
-export async function selectTemplate(query: string): Promise<{ selected: TemplateCandidate; alternatives: Array<{ name: string; score: number }> }> {
+export async function selectTemplate(query: string, preferredName?: string): Promise<{ selected: TemplateCandidate; alternatives: Array<{ name: string; score: number }> }> {
   const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length > 2);
   const entries = await readdir(config.TEMPLATE_LIBRARY_PATH, { recursive: true, withFileTypes: true });
   const candidates: TemplateCandidate[] = [];
@@ -29,7 +29,7 @@ export async function selectTemplate(query: string): Promise<{ selected: Templat
       candidates.push({ score, name, promptPath, prompt: await readFile(promptPath, "utf8") });
     } catch { /* ignore malformed or unreadable template entries */ }
   }
-  candidates.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  candidates.sort((a, b) => Number(b.name === preferredName) - Number(a.name === preferredName) || b.score - a.score || a.name.localeCompare(b.name));
   const selected = candidates[0];
   if (!selected) throw new Error(`No valid catalogue templates found under ${config.TEMPLATE_LIBRARY_PATH}`);
   return {

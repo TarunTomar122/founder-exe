@@ -8,6 +8,7 @@
     "dev:backend": "npm --workspace backend run dev",
     "dev:convex": "npm --workspace backend run convex:dev",
     "build": "npm run build --workspaces",
-    "typecheck": "npm run typecheck --workspaces"
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces --if-present"
   }
 }

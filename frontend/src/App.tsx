@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "convex/react";
 import { anyApi } from "convex/server";
 import {
   ArrowRight,
+  ArrowClockwise,
   ArrowUp,
   ArrowsIn,
   ArrowsOut,
@@ -48,6 +49,7 @@ const api = anyApi as any;
 type AgentKey = "founder" | "research" | "landing_page" | "go_to_market";
 type RuntimeStatus = "ready" | "queued" | "working" | "complete" | "error";
 type WorkspaceView = "map" | "team" | "tasks" | "outputs";
+type WorkflowStage = "discovery" | "research" | "research_ready" | "building" | "cross_review" | "launch_ready" | "launched" | "measuring" | "complete";
 
 type RunTrace = {
   prompt: string;
@@ -74,6 +76,9 @@ type RunCommand = {
   rootRequest?: string;
   context: Array<{ role: "user" | "assistant"; content: string }>;
   reviewRound?: number;
+  taskType?: "orchestrate" | "create" | "peer_review" | "revise" | "synthesize" | "measure";
+  stage?: WorkflowStage;
+  inputArtifactIds?: string[];
   createdAt: number;
   updatedAt: number;
 };
@@ -84,6 +89,9 @@ type Run = {
   agentKey: AgentKey;
   parentRunId?: string;
   reviewRound?: number;
+  taskType?: RunCommand["taskType"];
+  stage?: WorkflowStage;
+  inputArtifactIds?: string[];
   status: "pending" | "running" | "succeeded" | "failed";
   summary?: string;
   error?: string;
@@ -99,9 +107,14 @@ type Message = {
   _id: string;
   role: "user" | "assistant";
   agentKey?: AgentKey;
+  audience?: "user" | "internal";
   content: string;
   createdAt: number;
 };
+
+type ReviewFinding = { _id: string; runId: string; reviewerAgent: AgentKey; targetAgent: AgentKey; targetArtifactId?: string; targetArtifactKind: string; severity: "note" | "material" | "blocking"; feedback: string; acceptanceCriteria: string; round: number; status: "open" | "resolved" | "accepted"; createdAt: number };
+type Campaign = { _id: string; publicKey: string; status: "draft" | "ready" | "live" | "paused" | "complete"; landingUrl?: string };
+type ValidationSummary = { views: number; uniqueVisitors: number; ctaClicks: number; signups: number; conversionRate: number; bySource: Array<{ source: string; views: number; signups: number }> };
 
 type Artifact = {
   _id: string;
@@ -109,6 +122,10 @@ type Artifact = {
   kind: string;
   title: string;
   content: string;
+  data?: Record<string, any>;
+  version?: number;
+  status?: "current" | "superseded";
+  supersedesId?: string;
   sourceUrls: string[];
   createdAt: number;
 };
@@ -212,6 +229,9 @@ function statusFor(agent: AgentKey, runs: Run[]): RuntimeStatus {
 }
 
 function runLabel(run: Run) {
+  if (run.taskType === "peer_review") return `review ${run.command?.inputArtifactIds?.length ?? run.inputArtifactIds?.length ?? 0} team output${(run.command?.inputArtifactIds?.length ?? run.inputArtifactIds?.length ?? 0) === 1 ? "" : "s"}`;
+  if (run.taskType === "revise") return `revise ${TASK_BRIEFS[run.agentKey]}`;
+  if (run.taskType === "synthesize") return run.stage === "research_ready" ? "brief the user on market evidence" : "final campaign review";
   if (!run.parentRunId) return run.agentKey === "founder" ? "understand the idea + assign the team" : TASK_BRIEFS[run.agentKey];
   return run.agentKey === "founder" ? TASK_BRIEFS.founder : TASK_BRIEFS[run.agentKey];
 }
@@ -273,50 +293,35 @@ function Onboarding({ ownerKey, projects, showcases, plan, onReady, onOpen, onUp
 
   return (
     <main className="onboarding-shell">
-      <header className="onboarding-header"><Brand /><span>{plan?.plan === "free" ? "your first project is free" : `${plan?.plan ?? "private"} usage active`}</span></header>
-      <section className="onboarding-grid">
+      <header className="onboarding-header"><Brand /><nav><span>How it works</span><span>Example projects</span><strong>{plan?.plan === "free" ? "First validation free" : `${plan?.plan ?? "private"} access`}</strong></nav></header>
+      <section className="onboarding-modern">
         <div className="onboarding-copy">
-          <p className="kicker">from shower idea to real thing</p>
-          <h1>dump the idea.<br /><span>watch it get built.</span></h1>
-          <p className="lede">name your company, then tell founder the messy version. it will ask you the sharp questions, put research, landing and gtm to work, and show you every task as it happens.</p>
+          <div className="onboarding-badge"><span /> Research before you build</div>
+          <h1>Find out if your idea<br />deserves to exist.</h1>
+          <p className="lede">Founder turns a rough idea into cited market research, a reviewed validation campaign, a real waitlist page, and measurable demand signals—before you spend weeks building.</p>
+          <div className="onboarding-steps"><article><b>01</b><div><strong>Pressure-test the idea</strong><small>Market size, competitors, audience evidence, positioning and risky assumptions.</small></div></article><article><b>02</b><div><strong>Launch the smallest useful test</strong><small>A reviewed campaign and landing page with real waitlist capture.</small></div></article><article><b>03</b><div><strong>Make a decision from behavior</strong><small>See which channels create visits, clicks and qualified signups.</small></div></article></div>
+        </div>
+        <aside className="onboarding-start-card">
+          <header><span>New validation</span><small>About 5 minutes to first research</small></header>
           {plan?.canCreate === false ? (
             <div className="onboarding-paywall">
-              <span>free project used</span>
-              <strong>ready to build the next one?</strong>
-              <p>builder unlocks more monthly usage for $9. your first project stays yours.</p>
-              <button onClick={onUpgrade}>upgrade with dodo <ArrowRight size={17} /></button>
+              <span>Free project used</span>
+              <strong>Start another validation</strong>
+              <p>Builder unlocks more monthly projects for $9. Your existing work stays available.</p>
+              <button onClick={onUpgrade}>Upgrade with Dodo <ArrowRight size={17} /></button>
             </div>
           ) : (
             <form className="setup-form" onSubmit={submit}>
-              <label>idea / company name<input value={name} onChange={event => setName(event.target.value)} placeholder="my weird little idea" required autoFocus /></label>
-              <button disabled={busy}>{busy ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} meet founder</button>
-              <small>{plan?.plan === "internal" ? "internal billing bypass is active" : plan?.plan === "builder" ? "builder usage is active" : "your first project is free. no card needed."}</small>
+              <label>Project or idea name<input value={name} onChange={event => setName(event.target.value)} placeholder="e.g. invoicing for freelance designers" required autoFocus /></label>
+              <button disabled={busy}>{busy ? <SpinnerGap className="spin" size={18} /> : <ArrowRight size={18} />} Start with Founder</button>
+              <small>{plan?.plan === "internal" ? "Internal access active" : plan?.plan === "builder" ? "Builder usage active" : "No card required for your first project"}</small>
               {error && <p className="setup-error"><WarningCircle size={15} />{error}</p>}
             </form>
           )}
-          {!!projects.length && (
-            <div className="recent-projects">
-              <span>your companies</span>
-              {projects.slice(0, 4).map(project => (
-                <button type="button" key={project._id} onClick={() => onOpen(project)}>
-                  <div><strong>{project.name}</strong><small>{project.conversations.length} mission{project.conversations.length === 1 ? "" : "s"}</small></div>
-                  <ArrowRight size={15} />
-                </button>
-              ))}
-            </div>
-          )}
-          {!!showcases.length && <div className="recent-projects"><span>featured showcase</span>{showcases.map(project => <button type="button" key={project._id} onClick={() => onOpen(project)}><div><strong>{project.name}</strong><small>{project.description}</small></div><CheckCircle size={15} /></button>)}</div>}
-        </div>
-        <div className="onboarding-orbit" aria-label="your four-agent company">
-          <div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" />
-          {AGENTS.map(agent => (
-            <div className={`onboarding-agent onboard-${agent.key}`} key={agent.key}>
-              <span><img src={agent.avatar} alt="" /></span><b>{agent.shortName}</b>
-            </div>
-          ))}
-          <div className="orbit-label"><small>your company</small><strong>4 agents</strong><span>ready to work</span></div>
-        </div>
+          <footer><div>{AGENTS.map(agent => <img src={agent.avatar} alt="" key={agent.key} />)}</div><span>Founder coordinates research, GTM and landing review</span></footer>
+        </aside>
       </section>
+      {(!!projects.length || !!showcases.length) && <section className="onboarding-projects"><header><div><span>Your workspace</span><h2>Continue where you left off</h2></div><small>Everything is saved automatically</small></header><div>{projects.slice(0, 6).map(project => <button type="button" key={project._id} onClick={() => onOpen(project)}><span className="project-initial">{project.name.slice(0, 1)}</span><div><strong>{project.name}</strong><small>{project.conversations.length} validation{project.conversations.length === 1 ? "" : "s"}</small></div><ArrowRight size={15} /></button>)}{showcases.map(project => <button type="button" key={project._id} onClick={() => onOpen(project)}><span className="project-initial showcase"><Check size={15} /></span><div><strong>{project.name}</strong><small>{project.description}</small></div><ArrowRight size={15} /></button>)}</div></section>}
     </main>
   );
 }
@@ -491,7 +496,7 @@ type FeedItem =
 
 function buildFeed(messages: Message[], runs: Run[]): FeedItem[] {
   const items: FeedItem[] = [];
-  for (const message of messages) {
+  for (const message of messages.filter(message => message.audience !== "internal")) {
     if (message.role === "user") items.push({ kind: "user", id: message._id, content: message.content, at: message.createdAt });
     else items.push({ kind: "agent", id: message._id, agentKey: message.agentKey ?? "founder", content: message.content, at: message.createdAt });
   }
@@ -749,109 +754,68 @@ function evalMarkdown(title: string, checks: EvalCheck[], runs: Run[], artifacts
   ].join("\n");
 }
 
-function ResultsPanel({ conversationTitle, runs, artifacts, events, onOpenTask, onOpenArtifact, onOpenSite, onPreset }: { conversationTitle?: string; runs: Run[]; artifacts: Artifact[]; events: any[]; onOpenTask: (run: Run) => void; onOpenArtifact: (artifact: Artifact) => void; onOpenSite: (site: SiteView) => void; onPreset: (text: string) => void }) {
-  const [tab, setTab] = useState<"proof" | "evals" | "landing">("proof");
-  const checks = useMemo(() => buildChecks(runs, artifacts), [runs, artifacts]);
-  const passed = checks.filter(check => check.state === "pass").length;
-  const site = siteFor([...artifacts].reverse(), artifacts);
-  const landingDocs = [...artifacts].reverse().filter(artifact => artifact.kind.includes("landing") && artifact.kind !== "landing_page_html");
-  const ordered = [...runs].reverse();
+function currentArtifact(artifacts: Artifact[], kind: string) {
+  return [...artifacts].reverse().find(artifact => artifact.kind === kind && artifact.status !== "superseded") ?? [...artifacts].reverse().find(artifact => artifact.kind === kind);
+}
 
-  function openReport() {
-    onOpenArtifact({
-      _id: "local-eval-report",
-      runId: "",
-      kind: "eval_report",
-      title: "mission eval report",
-      content: evalMarkdown(conversationTitle ?? "", checks, runs, artifacts),
-      sourceUrls: [],
-      createdAt: Date.now(),
-    });
-  }
+function money(value: number, currency = "USD") {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency, notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
 
-  return (
-    <div className="panel-body results-panel">
-      <div className="replay-tabs">
-        <button className={tab === "proof" ? "active" : ""} onClick={() => setTab("proof")}>proof</button>
-        <button className={tab === "evals" ? "active" : ""} onClick={() => setTab("evals")}>evals</button>
-        <button className={tab === "landing" ? "active" : ""} onClick={() => setTab("landing")}>landing</button>
-      </div>
-      <div className="results-scroll">
-        {tab === "proof" && (
-          <>
-            <p className="panel-kicker">every trace, on the record</p>
-            {!ordered.length && <div className="board-empty"><Atom size={26} /><strong>no traces yet</strong><p>as soon as founder starts working, every task shows up here with its result and timing.</p></div>}
-            {ordered.map(run => {
-              const agent = agentFor(run.agentKey);
-              const state = runStateWord(run);
-              return (
-                <button className={`trace-card trace-${state}`} key={run._id} onClick={() => onOpenTask(run)}>
-                  <span className="trace-rail"><i /><em /></span>
-                  <span className="trace-main">
-                    <span className="trace-head"><img src={agent.avatar} alt="" /><span><strong>{agent.name}</strong><small>{run.parentRunId ? "handed over by founder" : "started from your message"}</small></span><b className={`state-chip chip-${state}`}>{state}</b></span>
-                    <span className="trace-body">{run.summary || (run.status === "running" ? THINKING[run.agentKey] : run.status === "failed" ? (run.error ?? "something went wrong") : "waiting to start…")}</span>
-                    <span className="trace-foot"><span><Clock size={12} /> {formatDuration(run.latencyMs)}</span><time>{formatTime(run.startedAt)}</time></span>
-                  </span>
-                </button>
-              );
-            })}
-            {!!events.length && (
-              <div className="event-ledger">
-                <span>what just happened</span>
-                {[...events].reverse().slice(0, 8).map(event => (
-                  <div key={event._id}><i className={`event-${event.type}`} /><p>{String(event.detail).toLowerCase()}</p><time>{formatTime(event.createdAt)}</time></div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-        {tab === "evals" && (
-          <>
-            <div className="eval-score">
-              <div><strong>{passed}/{checks.length}</strong><span>checks passing</span></div>
-              <div className="score-bars">{checks.map(check => <i key={check.label} className={`bar-${check.state}`} />)}</div>
-              <small>{runs.some(run => ["pending", "running"].includes(run.status)) ? "still running" : passed === checks.length && checks.length ? "all green" : "live"}</small>
-            </div>
-            <div className="eval-table">
-              <div className="eval-row eval-head"><strong>check</strong><span>meaning</span><span>state</span></div>
-              {checks.map(check => (
-                <div className="eval-row" key={check.label}>
-                  <strong>{check.label}</strong>
-                  <span>{check.detail}</span>
-                  <span className={`eval-state eval-${check.state}`}>{check.state === "pass" ? <><CheckCircle size={13} weight="fill" /> pass</> : check.state === "waiting" ? <><Clock size={13} /> working</> : <><WarningCircle size={13} /> not yet</>}</span>
-                </div>
-              ))}
-            </div>
-            <button className="report-button" onClick={openReport}><FileText size={15} /> open the full eval report (markdown)</button>
-            <p className="results-note">every check reads the stored record of this mission — no setup, no engineering. the report updates itself as agents finish.</p>
-          </>
-        )}
-        {tab === "landing" && (
-          <>
-            <p className="panel-kicker">your landing page</p>
-            {site ? (
-              <>
-                <button className="site-card" onClick={() => onOpenSite(site)}>
-                  <span className="site-card-chrome"><i /><i /><i /><em>{site.url ? new URL(site.url).hostname : "built by landing"}</em></span>
-                  <span className="site-card-body"><Globe size={26} /><strong>{site.title}</strong><small>click to view the website right here</small></span>
-                </button>
-                {site.url && <a className="landing-open" href={site.url} target="_blank" rel="noreferrer"><Globe size={15} /> open the live page in a new tab <ArrowRight size={14} /></a>}
-              </>
-            ) : (
-              <div className="board-empty"><Globe size={26} /><strong>no live page yet</strong><p>ask founder to build a landing page and the live preview will show up right here.</p><button className="report-button" onClick={() => onPreset(MISSIONS[1].text)}><Code size={15} /> build my landing page</button></div>
-            )}
-            {landingDocs.map(artifact => (
-              <button className="drawer-output" key={artifact._id} onClick={() => artifact.kind === "landing_page_preview" && artifact.sourceUrls[0] ? window.open(artifact.sourceUrls[0], "_blank", "noopener,noreferrer") : onOpenArtifact(artifact)}>
-                <span><ArtifactIcon kind={artifact.kind} /></span>
-                <div><strong>{artifact.title}</strong><small>{artifact.kind.replaceAll("_", " ")} · {formatTime(artifact.createdAt)}</small></div>
-                <ArrowRight size={14} />
-              </button>
-            ))}
-          </>
-        )}
-      </div>
-    </div>
-  );
+function MarketWorkspace({ artifact, stage, reviews, onApprove, onOpen }: { artifact?: Artifact; stage?: WorkflowStage; reviews: ReviewFinding[]; onApprove: () => void; onOpen: (artifact: Artifact) => void }) {
+  const data = artifact?.data as any;
+  if (artifact && !data?.icp) return <div className="legacy-deliverable"><div><FileText size={22} /><span><small>saved research</small><strong>{artifact.title}</strong><p>This project predates the structured market workspace. Its cited dossier is preserved exactly as it was generated.</p></span></div><button onClick={() => onOpen(artifact)}>open full dossier <ArrowRight size={14} /></button></div>;
+  if (!artifact) return <div className="validation-empty"><MagnifyingGlass size={28} /><strong>research is building the evidence dossier.</strong><p>competitors, market sizing, customer signals, communities and assumptions will appear here as structured evidence.</p></div>;
+  const maxMarket = Math.max(1, ...((data.marketSize ?? []).map((item: any) => item.valueHigh)));
+  const relevantReviews = reviews.filter(review => review.targetArtifactKind === "research_report");
+  return <div className="market-workspace">
+    <section className={`market-verdict verdict-${data.verdict}`}><span>research verdict</span><strong>{String(data.verdict).replace("_", " ")}</strong><p>{data.decision}</p><button onClick={() => onOpen(artifact)}>open cited dossier <ArrowRight size={13} /></button></section>
+    <section className="icp-card"><span>who hurts first</span><h3>{data.icp.segment}</h3><dl><div><dt>pain</dt><dd>{data.icp.problem}</dd></div><div><dt>trigger</dt><dd>{data.icp.trigger}</dd></div><div><dt>today</dt><dd>{data.icp.currentAlternative}</dd></div></dl></section>
+    <section className="market-sizing"><header><div><span>market model</span><h3>ranges with the math exposed.</h3></div><small>no fake precision</small></header>{(data.marketSize ?? []).length ? data.marketSize.map((item: any) => <article key={item.label}><div><strong>{item.label}</strong><span className={`confidence-${item.confidence}`}>{item.confidence} confidence</span></div><b>{money(item.valueBase, item.currency)}</b><div className="market-range"><i style={{ width: `${Math.max(4, item.valueHigh / maxMarket * 100)}%` }} /></div><small>{money(item.valueLow, item.currency)} – {money(item.valueHigh, item.currency)} · {item.period}</small><p>{item.formula}</p></article>) : <p className="evidence-missing">credible sizing inputs were not available; research refused to invent a number.</p>}</section>
+    <section className="position-card"><span>positioning gap</span><h3>{data.positioning?.promise}</h3><p>{data.positioning?.gap}</p><div>{(data.positioning?.risks ?? []).map((risk: string) => <em key={risk}><ShieldWarning size={12} />{risk}</em>)}</div></section>
+    <section className="competitor-board"><header><span>competitive field</span><strong>{data.competitors?.length ?? 0} alternatives mapped</strong></header><div>{(data.competitors ?? []).map((item: any) => <article key={item.name}><h4>{item.name}</h4><p>{item.promise}</p><dl><div><dt>audience</dt><dd>{item.audience}</dd></div><div><dt>price</dt><dd>{item.pricing}</dd></div><div><dt>open gap</dt><dd>{item.gap}</dd></div></dl><footer>{item.sourceUrls?.length ?? 0} sources</footer></article>)}</div></section>
+    <section className="signal-grid"><header><span>customer signals</span><strong>evidence, not vibes</strong></header><div>{(data.signals ?? []).map((signal: any) => <article key={signal.theme}><span className={`confidence-${signal.confidence}`}>{signal.confidence}</span><h4>{signal.theme}</h4><p>{signal.evidence}</p><small>{signal.sourceUrls?.length ?? 0} linked sources</small></article>)}</div></section>
+    <section className="assumption-board"><header><span>riskiest assumptions</span><strong>what to test next</strong></header>{(data.assumptions ?? []).map((item: any) => <article key={item.assumption}><i className={`impact-${item.impact}`} /><div><strong>{item.assumption}</strong><small>{item.evidenceStrength} evidence · {item.impact} impact</small><p>{item.nextTest}</p></div></article>)}</section>
+    {!!relevantReviews.length && <section className="review-board"><header><span>team review</span><strong>{relevantReviews.filter(review => review.status !== "open").length}/{relevantReviews.length} closed</strong></header>{relevantReviews.map(review => <article key={review._id} className={`finding-${review.severity}`}><img src={agentFor(review.reviewerAgent).avatar} alt="" /><div><strong>{agentFor(review.reviewerAgent).name} · {review.severity}</strong><p>{review.feedback}</p><small>{review.status} · pass when: {review.acceptanceCriteria}</small></div></article>)}</section>}
+    {stage === "research_ready" && <section className="approval-gate"><CheckCircle size={22} /><div><strong>research is ready for your decision.</strong><p>keep discussing with founder or lock this evidence so GTM can design the test.</p></div><button onClick={onApprove}>approve research <ArrowRight size={14} /></button></section>}
+  </div>;
+}
+
+function attributedLanding(url: string, platform: string, contentId: string) {
+  const value = new URL(url); value.searchParams.set("utm_source", platform); value.searchParams.set("utm_medium", "organic"); value.searchParams.set("utm_campaign", "validation"); value.searchParams.set("utm_content", contentId); return value.toString();
+}
+
+function CampaignWorkspace({ artifact, campaign, stage, approvals, onApproveLaunch, onShare, onOpen }: { artifact?: Artifact; campaign?: Campaign; stage?: WorkflowStage; approvals: any[]; onApproveLaunch: () => void; onShare: (post: any) => void; onOpen: (artifact: Artifact) => void }) {
+  const data = artifact?.data as any;
+  if (artifact && !data?.channels) return <div className="legacy-deliverable"><div><Megaphone size={22} /><span><small>saved campaign</small><strong>{artifact.title}</strong><p>This earlier campaign remains available as its original complete report.</p></span></div><button onClick={() => onOpen(artifact)}>open campaign report <ArrowRight size={14} /></button></div>;
+  if (!artifact) return <div className="validation-empty"><RocketLaunch size={28} /><strong>campaign work begins after research approval.</strong><p>GTM will score channels, build measurable experiments and draft platform-native content from the approved evidence.</p></div>;
+  return <div className="campaign-workspace">
+    <section className="campaign-thesis"><span>validation hypothesis</span><h3>{data.hypothesis}</h3><div><p><b>audience</b>{data.audience}</p><p><b>offer</b>{data.offer}</p><p><b>signal</b>{data.conversionEvent}</p></div></section>
+    <section className="channel-board"><header><span>channel selection</span><strong>chosen for learning speed</strong></header>{data.channels.map((channel: any) => { const raw = [channel.intent, channel.reachability, channel.feedbackSpeed].map(Number); const scale = Math.max(...raw) <= 1 ? 100 : 10; const percentages = raw.map(value => Math.max(0, Math.min(100, value * scale))); const score = Math.round(percentages.reduce((sum, value) => sum + value, 0) / percentages.length); return <article key={`${channel.platform}-${channel.community ?? ""}`}><div className="channel-score"><strong>{score}</strong><small>/100</small></div><div><span>{channel.platform}{channel.community ? ` / ${channel.community}` : ""}</span><p>{channel.rationale}</p><div className="channel-bars"><i style={{ width: `${percentages[0]}%` }} /><i style={{ width: `${percentages[1]}%` }} /><i style={{ width: `${percentages[2]}%` }} /></div><small>{channel.rulesSummary}</small></div><em className={`risk-${channel.promotionRisk}`}>{channel.promotionRisk} promo risk</em></article>})}</section>
+    <section className="experiment-timeline"><header><span>experiment calendar</span><strong>{data.experiments.length} measurable moves</strong></header>{data.experiments.map((experiment: any, index: number) => <article key={`${experiment.day}-${index}`}><b>day {experiment.day}</b><i /><div><strong>{experiment.platform} · {experiment.action}</strong><p>{experiment.asset}</p><small>measure {experiment.metric} · win: {experiment.successThreshold}</small><em>learn: {experiment.learningGoal}</em></div></article>)}</section>
+    <section className="threshold-board"><article><span>continue</span><p>{data.thresholds.continue}</p></article><article><span>revise</span><p>{data.thresholds.revise}</p></article><article><span>stop</span><p>{data.thresholds.stop}</p></article></section>
+    <section className="content-studio"><header><div><span>content studio</span><strong>platform-native, approval-safe.</strong></div><small>{campaign?.landingUrl ? "live link injected" : "waiting for landing url"}</small></header><div>{data.posts.map((post: any) => { const approved = approvals.some(item => item.objectType === "content" && item.objectId === post.id && item.decision === "approved"); const body = campaign?.landingUrl ? post.body.replaceAll("{{LANDING_URL}}", attributedLanding(campaign.landingUrl, post.platform, post.id)) : post.body; return <article key={post.id} className={`post-card platform-${post.platform}`}><header><div><span>{post.platform}</span><strong>{post.community ?? post.variant}</strong></div><em className={`risk-${post.risk}`}>{post.risk} risk</em></header>{post.title && <h4>{post.title}</h4>}<pre>{body}</pre><div className="post-rule"><ShieldWarning size={13} /><span>{post.ruleNotes}</span></div><footer><span>{body.length} chars · {post.variant}</span><button onClick={() => navigator.clipboard.writeText(body)}><Copy size={13} /> copy</button><button className="post-share" disabled={!campaign?.landingUrl || !["launched", "measuring", "complete"].includes(stage ?? "")} onClick={() => onShare({ ...post, body })}>{approved ? "open again" : "approve & open"} <ArrowRight size={13} /></button></footer></article>})}</div></section>
+    {stage === "launch_ready" && <section className="approval-gate launch-gate"><RocketLaunch size={22} /><div><strong>the team approved one coherent campaign.</strong><p>you still control every external action. approve launch to unlock platform composers.</p></div><button onClick={onApproveLaunch}>approve launch <ArrowRight size={14} /></button></section>}
+  </div>;
+}
+
+function SignalsWorkspace({ validation, campaign }: { validation?: ValidationSummary; campaign?: Campaign }) {
+  const value = validation ?? { views: 0, uniqueVisitors: 0, ctaClicks: 0, signups: 0, conversionRate: 0, bySource: [] };
+  return <div className="signals-workspace"><section className="signal-hero"><span>live validation</span><h3>{campaign?.status === "live" ? "the market is answering now." : "measurement starts when you approve launch."}</h3><p>views, intent clicks and real waitlist signups flow back from the stable Cloudflare page into Convex.</p></section><section className="funnel-grid"><article><span>page views</span><strong>{value.views}</strong><small>{value.uniqueVisitors} unique</small></article><i /><article><span>cta clicks</span><strong>{value.ctaClicks}</strong><small>{value.views ? `${Math.round(value.ctaClicks / value.views * 100)}%` : "—"} click rate</small></article><i /><article><span>signups</span><strong>{value.signups}</strong><small>{value.views ? `${(value.conversionRate * 100).toFixed(1)}%` : "—"} conversion</small></article></section><section className="source-performance"><header><span>source performance</span><strong>attributed by campaign link</strong></header>{value.bySource.length ? value.bySource.map(item => <article key={item.source}><strong>{item.source}</strong><div><i style={{ width: `${Math.max(3, value.views ? item.views / value.views * 100 : 0)}%` }} /></div><span>{item.views} views · {item.signups} signups</span></article>) : <div className="validation-empty compact"><TrendUp size={22} /><strong>no traffic yet</strong><p>share an approved draft and this board updates live.</p></div>}</section></div>;
+}
+
+function ResultsPanel({ data, runs, artifacts, events, onOpenTask, onOpenArtifact, onOpenSite, onApproveResearch, onApproveLaunch, onShare }: { data: any; runs: Run[]; artifacts: Artifact[]; events: any[]; onOpenTask: (run: Run) => void; onOpenArtifact: (artifact: Artifact) => void; onOpenSite: (site: SiteView) => void; onApproveResearch: () => void; onApproveLaunch: () => void; onShare: (post: any) => void }) {
+  const [tab, setTab] = useState<"market" | "campaign" | "landing" | "signals" | "proof">("market");
+  const research = currentArtifact(artifacts, "research_report"); const gtm = currentArtifact(artifacts, "gtm_strategy");
+  const site = siteFor([...artifacts].reverse(), artifacts); const stage = data?.conversation?.stage as WorkflowStage | undefined;
+  const reviews: ReviewFinding[] = data?.reviews ?? []; const approvals = data?.approvals ?? []; const ordered = [...runs].reverse();
+  return <div className="panel-body results-panel validation-results"><div className="validation-tabs"><button className={tab === "market" ? "active" : ""} onClick={() => setTab("market")}>market</button><button className={tab === "campaign" ? "active" : ""} onClick={() => setTab("campaign")}>campaign</button><button className={tab === "landing" ? "active" : ""} onClick={() => setTab("landing")}>landing</button><button className={tab === "signals" ? "active" : ""} onClick={() => setTab("signals")}>signals</button><button className={tab === "proof" ? "active" : ""} onClick={() => setTab("proof")}>proof</button></div><div className="results-scroll">
+    {tab === "market" && <MarketWorkspace artifact={research} stage={stage} reviews={reviews} onApprove={onApproveResearch} onOpen={onOpenArtifact} />}
+    {tab === "campaign" && <CampaignWorkspace artifact={gtm} campaign={data?.campaign} stage={stage} approvals={approvals} onApproveLaunch={onApproveLaunch} onShare={onShare} onOpen={onOpenArtifact} />}
+    {tab === "landing" && <>{site ? <><button className="site-card validation-site-card" onClick={() => onOpenSite(site)}><span className="site-card-chrome"><i /><i /><i /><em>{site.url ? new URL(site.url).hostname : "built by landing"}</em></span><span className="site-card-body"><Globe size={26} /><strong>{site.title}</strong><small>stable url · real waitlist · attributed analytics</small></span></button>{site.url && <a className="landing-open" href={site.url} target="_blank" rel="noreferrer"><Globe size={15} /> open live validation page <ArrowRight size={14} /></a>}</> : <div className="validation-empty"><Globe size={28} /><strong>landing starts after GTM is reviewed.</strong><p>it will inherit approved evidence, campaign message and CTA, then Research and GTM both review it.</p></div>}<section className="review-board"><header><span>landing cross-review</span><strong>{reviews.filter(review => review.targetArtifactKind.includes("landing")).length} findings</strong></header>{reviews.filter(review => review.targetArtifactKind.includes("landing")).map(review => <article key={review._id} className={`finding-${review.severity}`}><img src={agentFor(review.reviewerAgent).avatar} alt="" /><div><strong>{agentFor(review.reviewerAgent).name} · {review.status}</strong><p>{review.feedback}</p><small>pass when: {review.acceptanceCriteria}</small></div></article>)}</section></>}
+    {tab === "signals" && <SignalsWorkspace validation={data?.validation} campaign={data?.campaign} />}
+    {tab === "proof" && <><section className="workflow-stage"><span>workflow stage</span><strong>{stage?.replaceAll("_", " ") ?? "legacy run"}</strong><div>{["discovery", "research", "research_ready", "building", "cross_review", "launch_ready", "launched"].map(item => <i className={item === stage ? "active" : ""} key={item} title={item} />)}</div></section>{ordered.map(run => { const agent = agentFor(run.agentKey); const state = runStateWord(run); return <button className={`trace-card trace-${state}`} key={run._id} onClick={() => onOpenTask(run)}><span className="trace-rail"><i /><em /></span><span className="trace-main"><span className="trace-head"><img src={agent.avatar} alt="" /><span><strong>{agent.name} · {run.taskType ?? "legacy task"}</strong><small>{run.stage?.replaceAll("_", " ") ?? (run.parentRunId ? "team handoff" : "user request")}</small></span><b className={`state-chip chip-${state}`}>{state}</b></span><span className="trace-body">{run.summary || (run.status === "running" ? THINKING[run.agentKey] : run.error ?? "waiting")}</span><span className="trace-foot"><span><Clock size={12} /> {formatDuration(run.latencyMs)}</span><span>{formatTokens((run.trace?.inputTokens ?? 0) + (run.trace?.outputTokens ?? 0))} tokens</span></span></span></button>})}{!!events.length && <div className="event-ledger"><span>team activity</span>{[...events].reverse().slice(0, 14).map(event => <div key={event._id}><i className={`event-${event.type}`} /><p>{String(event.detail).toLowerCase()}</p><time>{formatTime(event.createdAt)}</time></div>)}</div>}</>}
+  </div></div>;
 }
 
 function SettingsPanel({ companyName, companyId, conversationId, projects, plan, onOpenProject, onSwitch, onNewIdea, onUpgrade }: { companyName: string; companyId: string; conversationId: string | null; projects: Project[]; plan?: BillingPlan; onOpenProject: (project: Project, conversationId?: string) => void; onSwitch: () => void; onNewIdea: () => void; onUpgrade: () => void }) {
@@ -1088,14 +1052,18 @@ function SiteViewer({ site, onClose }: { site: SiteView; onClose: () => void }) 
 }
 
 function TaskDrawer({ run, artifacts, onClose, onOpenArtifact }: { run: Run; artifacts: Artifact[]; onClose: () => void; onOpenArtifact: (artifact: Artifact) => void }) {
+  const detail = useQuery(api.conversations.getRunTrace, { runId: run._id as never }) as { trace?: Run["trace"]; command?: RunCommand; artifacts?: Artifact[] } | null | undefined;
+  const trace = detail?.trace ?? run.trace;
+  const command = detail?.command ?? run.command;
+  const fullRun = { ...run, trace, command };
   const agent = agentFor(run.agentKey);
   const state = runStateWord(run);
-  const outputs = artifacts.filter(artifact => artifact.runId === run._id);
+  const outputs = detail?.artifacts ?? artifacts.filter(artifact => artifact.runId === run._id);
   return (
     <div className="drawer-backdrop" role="dialog" aria-modal="true" aria-label="task detail" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="task-drawer">
         <button className="drawer-close" onClick={onClose} aria-label="close task"><X size={17} /></button>
-        <div className="run-export-buttons"><button onClick={() => saveTextFile(`founder-trace-${run._id}.json`, JSON.stringify({ run, artifacts: outputs }, null, 2), "application/json")}><DownloadSimple size={13} /> JSON</button><button onClick={() => saveTextFile(`founder-trace-${run._id}.md`, runMarkdown(run, artifacts), "text/markdown")}><DownloadSimple size={13} /> Markdown</button></div>
+        <div className="run-export-buttons"><button onClick={() => saveTextFile(`founder-trace-${run._id}.json`, JSON.stringify({ run: fullRun, artifacts: outputs }, null, 2), "application/json")}><DownloadSimple size={13} /> JSON</button><button onClick={() => saveTextFile(`founder-trace-${run._id}.md`, runMarkdown(fullRun, artifacts), "text/markdown")}><DownloadSimple size={13} /> Markdown</button></div>
         <div className="drawer-agent">
           <img src={agent.avatar} alt="" />
           <div><p className="panel-kicker">task file</p><h2>{agent.name} · {runLabel(run)}</h2><em className={`state-chip chip-${state}`}>{state}</em></div>
@@ -1117,20 +1085,20 @@ function TaskDrawer({ run, artifacts, onClose, onOpenArtifact }: { run: Run; art
           <div><span>assigned by</span><strong>{run.parentRunId ? "founder" : "you"}</strong></div>
         </div>
         <div className="trace-telemetry-grid">
-          <div><span>model</span><strong>{run.trace?.model ?? "historical / unavailable"}</strong></div>
-          <div><span>provider</span><strong>{run.trace?.provider ?? "—"}</strong></div>
-          <div><span>input tokens</span><strong>{formatTokens(run.trace?.inputTokens)}</strong></div>
-          <div><span>output tokens</span><strong>{formatTokens(run.trace?.outputTokens)}</strong></div>
-          <div><span>cache read</span><strong>{formatTokens(run.trace?.cacheReadTokens)}</strong></div>
-          <div><span>reasoning</span><strong>{formatTokens(run.trace?.reasoningTokens)}</strong></div>
-          <div><span>API / tool calls</span><strong>{run.trace ? `${run.trace.apiCallCount} / ${run.trace.toolCallCount}` : "—"}</strong></div>
-          <div><span>tracked cost</span><strong>{formatCost(run)}</strong></div>
+          <div><span>model</span><strong>{trace?.model ?? "historical / unavailable"}</strong></div>
+          <div><span>provider</span><strong>{trace?.provider ?? "—"}</strong></div>
+          <div><span>input tokens</span><strong>{formatTokens(trace?.inputTokens)}</strong></div>
+          <div><span>output tokens</span><strong>{formatTokens(trace?.outputTokens)}</strong></div>
+          <div><span>cache read</span><strong>{formatTokens(trace?.cacheReadTokens)}</strong></div>
+          <div><span>reasoning</span><strong>{formatTokens(trace?.reasoningTokens)}</strong></div>
+          <div><span>API / tool calls</span><strong>{trace ? `${trace.apiCallCount} / ${trace.toolCallCount}` : "—"}</strong></div>
+          <div><span>tracked cost</span><strong>{formatCost(fullRun)}</strong></div>
         </div>
-        <details className="trace-disclosure" open><summary>message sent to agent</summary><pre>{run.command?.message ?? "Unavailable for this historical run."}</pre></details>
-        <details className="trace-disclosure"><summary>conversation context ({run.command?.context.length ?? 0} messages)</summary><div className="trace-context">{run.command?.context.map((item, index) => <p key={index}><b>{item.role}</b>{item.content}</p>) ?? <p>Unavailable.</p>}</div></details>
-        <details className="trace-disclosure"><summary>exact Hermes prompt · {run.trace?.attemptCount ?? 0} attempt{run.trace?.attemptCount === 1 ? "" : "s"}</summary><pre>{run.trace?.prompt ?? "Unavailable for this historical run."}</pre></details>
-        <details className="trace-disclosure" open><summary>reply returned by agent</summary><pre>{run.trace?.response ?? run.summary ?? run.error ?? "No reply recorded."}</pre></details>
-        {!!run.trace?.sessionIds.length && <div className="trace-session"><span>Hermes sessions</span><code>{run.trace.sessionIds.join(" · ")}</code></div>}
+        <details className="trace-disclosure" open><summary>message sent to agent</summary><pre>{command?.message ?? (detail === undefined ? "Loading exact command…" : "Unavailable for this historical run.")}</pre></details>
+        <details className="trace-disclosure"><summary>conversation context ({command?.context.length ?? 0} messages)</summary><div className="trace-context">{command?.context.map((item, index) => <p key={index}><b>{item.role}</b>{item.content}</p>) ?? <p>{detail === undefined ? "Loading…" : "Unavailable."}</p>}</div></details>
+        <details className="trace-disclosure"><summary>exact Hermes prompt · {trace?.attemptCount ?? 0} attempt{trace?.attemptCount === 1 ? "" : "s"}</summary><pre>{trace?.prompt || (detail === undefined ? "Loading exact prompt…" : "Unavailable for this historical run.")}</pre></details>
+        <details className="trace-disclosure" open><summary>reply returned by agent</summary><pre>{trace?.response || run.summary || run.error || (detail === undefined ? "Loading exact reply…" : "No reply recorded.")}</pre></details>
+        {!!trace?.sessionIds.length && <div className="trace-session"><span>Hermes sessions</span><code>{trace.sessionIds.join(" · ")}</code></div>}
         <div className="drawer-section">
           <p className="panel-kicker">what it made ({outputs.length})</p>
           {!outputs.length && <p className="drawer-empty">nothing produced on this task {run.status === "succeeded" ? "— it was a thinking / handoff step." : "yet."}</p>}
@@ -1207,21 +1175,66 @@ function BillingModal({ plan, busy, error, onClose, onCheckout, onBypass }: { pl
 
 /* ---------------- app shell ---------------- */
 
+type JourneyView = "idea" | "market" | "campaign" | "landing" | "signals" | "team";
+
+const JOURNEY: Array<{ key: JourneyView; label: string; icon: typeof Compass }> = [
+  { key: "idea", label: "idea", icon: Compass }, { key: "market", label: "market", icon: ChartBar }, { key: "campaign", label: "campaign", icon: RocketLaunch }, { key: "landing", label: "landing", icon: Globe }, { key: "signals", label: "signals", icon: TrendUp }, { key: "team", label: "team", icon: UsersThree },
+];
+
+const STAGE_ORDER: WorkflowStage[] = ["discovery", "research", "research_ready", "building", "cross_review", "launch_ready", "launched", "measuring", "complete"];
+
+function suggestedView(stage?: WorkflowStage): JourneyView {
+  if (!stage || stage === "discovery") return "idea";
+  if (["research", "research_ready"].includes(stage)) return "market";
+  if (stage === "building") return "campaign";
+  if (["cross_review", "launch_ready"].includes(stage)) return "landing";
+  return "signals";
+}
+
+function IdeaWorkspace({ data, runs, sources, onGo }: { data: any; runs: Run[]; sources: number; onGo: (view: JourneyView) => void }) {
+  const stage = data?.conversation?.stage as WorkflowStage | undefined;
+  const research = currentArtifact(data?.artifacts ?? [], "research_report");
+  const gtm = currentArtifact(data?.artifacts ?? [], "gtm_strategy");
+  const landing = currentArtifact(data?.artifacts ?? [], "landing_page_preview");
+  const stageIndex = stage ? STAGE_ORDER.indexOf(stage) : -1;
+  return <div className="idea-workspace">
+    <section className="idea-hero"><div><span>validation command center</span><h1>{data?.conversation?.title ?? "tell founder the messy version."}</h1><p>{data ? "founder is turning this idea into evidence, a measurable campaign, and a real signal from the market." : "describe what it does and who feels the pain. founder will ask what matters before the team moves."}</p></div><div className="idea-pulse"><i className={runs.some(run => run.status === "running") ? "is-live" : ""} /><strong>{runs.some(run => run.status === "running") ? "team working" : stage?.replaceAll("_", " ") ?? "waiting for your pitch"}</strong><small>convex live workflow</small></div></section>
+    <section className="journey-overview"><header><span>from idea to signal</span><strong>nothing advances without evidence or approval.</strong></header><div>{STAGE_ORDER.slice(0, 7).map((item, index) => <article className={`${index < stageIndex ? "is-done" : ""} ${item === stage ? "is-current" : ""}`} key={item}><i>{index < stageIndex ? <Check size={12} /> : String(index + 1).padStart(2, "0")}</i><strong>{item.replaceAll("_", " ")}</strong><small>{item === "research_ready" || item === "launch_ready" ? "your decision" : index % 2 ? "team review" : "agent work"}</small></article>)}</div></section>
+    <section className="idea-stats"><article><span>evidence</span><strong>{sources}</strong><small>unique sources</small></article><article><span>agent work</span><strong>{runs.filter(run => run.status === "succeeded").length}</strong><small>{runs.length} tasks total</small></article><article><span>peer review</span><strong>{runs.filter(run => run.taskType === "peer_review").length}</strong><small>cross-checks run</small></article><article><span>real signals</span><strong>{data?.validation?.signups ?? 0}</strong><small>waitlist signups</small></article></section>
+    <section className="deliverable-roadmap"><header><span>your validation stack</span><strong>open any layer</strong></header><div><button onClick={() => onGo("market")} className={research ? "is-ready" : ""}><ChartBar size={20} /><div><strong>market dossier</strong><small>{research ? `${research.data?.competitors?.length ?? 0} competitors · ${research.sourceUrls.length} sources` : "research queued after founder understands the idea"}</small></div><ArrowRight size={15} /></button><button onClick={() => onGo("campaign")} className={gtm ? "is-ready" : ""}><RocketLaunch size={20} /><div><strong>validation campaign</strong><small>{gtm ? `${gtm.data?.channels?.length ?? 0} channels · ${gtm.data?.posts?.length ?? 0} drafts` : "blocked until research is approved"}</small></div><ArrowRight size={15} /></button><button onClick={() => onGo("landing")} className={landing ? "is-ready" : ""}><Globe size={20} /><div><strong>stable waitlist page</strong><small>{landing ? "live capture and attribution connected" : "built after campaign message is reviewed"}</small></div><ArrowRight size={15} /></button><button onClick={() => onGo("signals")} className={data?.campaign?.status === "live" ? "is-ready" : ""}><TrendUp size={20} /><div><strong>demand signals</strong><small>{data?.campaign?.status === "live" ? "measuring the live campaign" : "starts after your launch approval"}</small></div><ArrowRight size={15} /></button></div></section>
+  </div>;
+}
+
+function LandingWorkspace({ artifacts, reviews, onOpenSite, onOpenArtifact }: { artifacts: Artifact[]; reviews: ReviewFinding[]; onOpenSite: (site: SiteView) => void; onOpenArtifact: (artifact: Artifact) => void }) {
+  const site = siteFor([...artifacts].reverse(), artifacts); const brief = currentArtifact(artifacts, "landing_page_brief"); const landingReviews = reviews.filter(review => review.targetArtifactKind.includes("landing"));
+  return <div className="landing-workspace">{site ? <section className="landing-hero"><button className="site-card validation-site-card" onClick={() => onOpenSite(site)}><span className="site-card-chrome"><i /><i /><i /><em>{site.url ? new URL(site.url).hostname : "built by landing"}</em></span><span className="site-card-body"><Globe size={30} /><strong>{site.title}</strong><small>stable url · real waitlist · attributed analytics</small></span></button><div>{site.url && <a className="landing-open" href={site.url} target="_blank" rel="noreferrer"><Globe size={15} /> open live validation page <ArrowRight size={14} /></a>}{brief && <button className="landing-brief-button" onClick={() => onOpenArtifact(brief)}><FileText size={15} /> open message + claim brief</button>}</div></section> : <div className="validation-empty"><Globe size={30} /><strong>the page waits for an approved strategy.</strong><p>landing consumes the research and campaign, then both specialists review every claim and CTA before founder presents it.</p></div>}{brief?.data && <section className="landing-contract"><header><span>conversion contract</span><strong>what this page must prove</strong></header><div><article><span>audience</span><p>{brief.data.audience}</p></article><article><span>five-second promise</span><p>{brief.data.promise}</p></article><article><span>primary action</span><p>{brief.data.primaryCta}</p></article><article><span>qualifying question</span><p>{brief.data.waitlistQuestion}</p></article></div></section>}<section className="review-board landing-review-board"><header><span>cross-review ledger</span><strong>{landingReviews.filter(review => review.status !== "open").length}/{landingReviews.length} closed</strong></header>{landingReviews.length ? landingReviews.map(review => <article key={review._id} className={`finding-${review.severity}`}><img src={agentFor(review.reviewerAgent).avatar} alt="" /><div><strong>{agentFor(review.reviewerAgent).name} · round {review.round}</strong><p>{review.feedback}</p><small>{review.status} · pass when: {review.acceptanceCriteria}</small></div></article>) : <div className="validation-empty compact"><ShieldWarning size={22} /><strong>reviews appear with the first page draft.</strong><p>research checks truth; GTM checks conversion and message continuity.</p></div>}</section></div>;
+}
+
+function TeamWorkspace({ runs, reviews, events, onOpenTask, onExport }: { runs: Run[]; reviews: ReviewFinding[]; events: any[]; onOpenTask: (run: Run) => void; onExport: (format: "json" | "markdown") => void }) {
+  return <div className="team-workspace"><section className="team-export"><div><span>portable mission record</span><strong>share the complete work, not a screenshot.</strong></div><button onClick={() => onExport("json")}><DownloadSimple size={14} /> JSON</button><button onClick={() => onExport("markdown")}><DownloadSimple size={14} /> Markdown</button></section><section className="team-roster"><header><span>the validation crew</span><strong>every handoff is real and inspectable</strong></header><div>{AGENTS.map(agent => { const own = runs.filter(run => run.agentKey === agent.key); const latest = own.at(-1); return <article key={agent.key}><img src={agent.avatar} alt="" /><div><span>{agent.role}</span><strong>{agent.name}</strong><p>{latest ? runLabel(latest) : "waiting for the workflow"}</p></div><em className={`state-chip chip-${statusFor(agent.key, runs)}`}>{statusFor(agent.key, runs)}</em></article>})}</div></section><section className="handoff-graph"><header><span>work graph</span><strong>create → review → revise → synthesize</strong></header>{runs.length ? runs.map((run, index) => <button key={run._id} onClick={() => onOpenTask(run)}><i>{String(index + 1).padStart(2, "0")}</i><img src={agentFor(run.agentKey).avatar} alt="" /><div><strong>{agentFor(run.agentKey).name} · {run.taskType ?? "legacy"}</strong><small>{run.stage?.replaceAll("_", " ") ?? "legacy"} · {runLabel(run)}</small></div><em className={`state-chip chip-${runStateWord(run)}`}>{runStateWord(run)}</em></button>) : <div className="validation-empty compact"><Atom size={22} /><strong>the graph starts after your first message.</strong></div>}</section><section className="review-board"><header><span>review findings</span><strong>{reviews.length} checks</strong></header>{reviews.map(review => <article key={review._id} className={`finding-${review.severity}`}><img src={agentFor(review.reviewerAgent).avatar} alt="" /><div><strong>{agentFor(review.reviewerAgent).name} reviewed {review.targetArtifactKind.replaceAll("_", " ")}</strong><p>{review.feedback}</p><small>{review.status} · {review.acceptanceCriteria}</small></div></article>)}</section><section className="event-ledger team-event-ledger"><span>workflow ledger</span>{[...events].reverse().slice(0, 20).map(event => <div key={event._id}><i className={`event-${event.type}`} /><p>{String(event.detail).toLowerCase()}</p><time>{formatTime(event.createdAt)}</time></div>)}</section></div>;
+}
+
+function ActivityPanel({ runs, reviews, events, onOpenTask }: { runs: Run[]; reviews: ReviewFinding[]; events: any[]; onOpenTask: (run: Run) => void }) {
+  const active = runs.filter(run => ["pending", "running"].includes(run.status));
+  return <div className="panel-body activity-panel"><p className="panel-kicker">team room</p><h2>watch the work move.</h2>{active.length ? <div className="activity-live">{active.map(run => <button key={run._id} onClick={() => onOpenTask(run)}><img src={agentFor(run.agentKey).avatar} alt="" /><div><strong>{agentFor(run.agentKey).name} · {run.taskType}</strong><small>{THINKING[run.agentKey]}</small></div><SpinnerGap className="spin" size={15} /></button>)}</div> : <div className="activity-quiet"><CheckCircle size={20} /><span>no agent is running right now</span></div>}<div className="activity-feed">{[...events].reverse().slice(0, 18).map(event => <article key={event._id}><i className={`event-${event.type}`} /><div><strong>{String(event.type).replaceAll("_", " ")}</strong><p>{event.detail}</p></div><time>{formatTime(event.createdAt)}</time></article>)}</div>{!!reviews.length && <div className="activity-reviews"><p className="panel-kicker">latest peer checks</p>{[...reviews].reverse().slice(0, 5).map(review => <article key={review._id}><img src={agentFor(review.reviewerAgent).avatar} alt="" /><div><strong>{review.severity} · {review.status}</strong><p>{review.feedback}</p></div></article>)}</div>}</div>;
+}
+
 export function App() {
+  const devSeed = import.meta.env.DEV ? new URLSearchParams(window.location.search) : null;
   const [ownerKey] = useState(() => {
     const existing = localStorage.getItem("founder.ownerKey");
     if (existing) return existing;
     const created = globalThis.crypto?.randomUUID?.() ?? `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`; localStorage.setItem("founder.ownerKey", created); return created;
   });
-  const [companyId, setCompanyId] = useState<string | null>(() => localStorage.getItem("founder.companyId"));
-  const [companyName, setCompanyName] = useState(() => localStorage.getItem("founder.companyName") || "your company");
+  const [companyId, setCompanyId] = useState<string | null>(() => devSeed?.get("company") || localStorage.getItem("founder.companyId"));
+  const [companyName, setCompanyName] = useState(() => devSeed?.get("name") || localStorage.getItem("founder.companyName") || "your company");
   const [isShowcase, setIsShowcase] = useState(() => localStorage.getItem("founder.isShowcase") === "true");
-  const [conversationId, setConversationId] = useState<string | null>(() => localStorage.getItem("founder.conversationId"));
+  const [conversationId, setConversationId] = useState<string | null>(() => devSeed?.get("conversation") || localStorage.getItem("founder.conversationId"));
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
-  const [view, setView] = useState<WorkspaceView>("map");
-  const [nav, setNav] = useState<"home" | "results" | "settings">("home");
-  const [selectedAgent, setSelectedAgent] = useState<AgentKey | null>(null);
+  const [journeyView, setJourneyView] = useState<JourneyView>("idea");
+  const [nav, setNav] = useState<"founder" | "activity" | "settings">("founder");
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [preview, setPreview] = useState<Artifact | null>(null);
   const [site, setSite] = useState<SiteView | null>(null);
@@ -1241,6 +1254,10 @@ export function App() {
   });
   const createConversation = useMutation(api.conversations.createConversation);
   const sendMessage = useMutation(api.conversations.sendMessage);
+  const approveResearchMutation = useMutation(api.conversations.approveResearch);
+  const approveLaunchMutation = useMutation(api.conversations.approveLaunch);
+  const approveContentMutation = useMutation(api.conversations.approveContent);
+  const retryFailedTaskMutation = useMutation(api.conversations.retryLatestFailedReview);
   const data = useQuery(api.conversations.getConversation, conversationId ? { conversationId: conversationId as never } : "skip") as any;
   const projects = (useQuery(api.conversations.listProjects, { ownerKey }) as Project[] | undefined) ?? [];
   const showcases = (useQuery(api.conversations.listShowcases, {}) as Project[] | undefined) ?? [];
@@ -1248,27 +1265,34 @@ export function App() {
     const free = billingAccess === "free";
     return { plan: billingAccess, status: billingAccess, used: projects.length, limit: free ? 1 : 999, remaining: free ? Math.max(0, 1 - projects.length) : 999, canCreate: !free || projects.length < 1, canBypass: internalMode, bypassActive: billingAccess === "internal" };
   }, [billingAccess, internalMode, projects.length]);
-  const runs: Run[] = data?.runs ?? [];
+  const runs: Run[] = (data?.runs ?? []).map((run: Run) => ({ ...run, command: (data?.commands ?? []).find((command: RunCommand) => command._id === run.commandId) }));
   const artifacts: Artifact[] = data?.artifacts ?? [];
   const events: any[] = data?.events ?? [];
   const progress = missionProgress(runs);
   const workingCount = runs.filter(run => run.status === "running").length;
   const sources = new Set(artifacts.flatMap(artifact => artifact.sourceUrls)).size;
   const active = runs.some(run => ["pending", "running"].includes(run.status));
+  const unresolvedFailure = [...runs].reverse().find((run, reverseIndex) => run.status === "failed" && !runs.slice(runs.length - reverseIndex).some(candidate => candidate.agentKey === run.agentKey && candidate.taskType === run.taskType && candidate.status === "succeeded"));
   const openRun = openRunId ? runs.find(run => run._id === openRunId) ?? null : null;
 
   function exportMission(format: "json" | "markdown") {
     const slug = (data?.conversation?.title ?? "mission").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "mission";
     if (format === "json") {
-      saveTextFile(`founder-trace-${slug}.json`, JSON.stringify({ exportedAt: new Date().toISOString(), conversation: data?.conversation, company: data?.company, runs, messages: data?.messages ?? [], events, artifacts }, null, 2), "application/json");
+      saveTextFile(`founder-trace-${slug}.json`, JSON.stringify({ exportedAt: new Date().toISOString(), conversation: data?.conversation, company: data?.company, campaign: data?.campaign, validation: data?.validation, runs, commands: data?.commands ?? [], messages: data?.messages ?? [], events, reviews: data?.reviews ?? [], approvals: data?.approvals ?? [], artifacts }, null, 2), "application/json");
       return;
     }
     const totals = runs.reduce((value, run) => value + (run.trace?.inputTokens ?? 0) + (run.trace?.outputTokens ?? 0), 0);
-    const markdown = `# Founder.exe mission trace: ${data?.conversation?.title ?? "Untitled"}\n\n- Exported: ${new Date().toISOString()}\n- Runs: ${runs.length}\n- Total tokens: ${totals}\n- Sources: ${sources}\n\n${runs.map(run => runMarkdown(run, artifacts)).join("\n\n---\n\n")}`;
+    const reviewSummary = (data?.reviews ?? []).map((review: ReviewFinding) => `- [${review.status}] ${review.reviewerAgent} → ${review.targetArtifactKind} (${review.severity}): ${review.feedback}\n  Pass when: ${review.acceptanceCriteria}`).join("\n") || "- No peer findings recorded.";
+    const markdown = `# Founder.exe mission trace: ${data?.conversation?.title ?? "Untitled"}\n\n- Exported: ${new Date().toISOString()}\n- Workflow stage: ${data?.conversation?.stage ?? "legacy"}\n- Runs: ${runs.length}\n- Total tokens: ${totals}\n- Sources: ${sources}\n- Landing page: ${data?.campaign?.landingUrl ?? "not deployed"}\n- Waitlist signups: ${data?.validation?.signups ?? 0}\n\n## Peer-review ledger\n\n${reviewSummary}\n\n---\n\n${runs.map(run => runMarkdown(run, artifacts)).join("\n\n---\n\n")}`;
     saveTextFile(`founder-trace-${slug}.md`, markdown, "text/markdown");
   }
 
   useEffect(() => { if (data?.company?.name && !isShowcase) setCompanyName(data.company.name); }, [data?.company?.name, isShowcase]);
+  const lastStage = useRef<WorkflowStage | undefined>(undefined);
+  useEffect(() => {
+    const stage = data?.conversation?.stage as WorkflowStage | undefined;
+    if (stage && stage !== lastStage.current) { lastStage.current = stage; setJourneyView(suggestedView(stage)); }
+  }, [data?.conversation?.stage]);
   useEffect(() => {
     const url = new URL(window.location.href);
     if (url.searchParams.get("checkout") !== "success" && url.searchParams.get("internal") !== "1") return;
@@ -1329,54 +1353,81 @@ export function App() {
     } finally { setSending(false); }
   }
 
+  async function approveResearch() {
+    if (!conversationId || sending) return; setSending(true);
+    try { await approveResearchMutation({ conversationId: conversationId as never }); }
+    finally { setSending(false); }
+  }
+
+  async function approveLaunch() {
+    if (!conversationId || sending) return; setSending(true);
+    try { await approveLaunchMutation({ conversationId: conversationId as never }); }
+    finally { setSending(false); }
+  }
+
+  async function retryFailedTask() {
+    if (!conversationId || sending) return; setSending(true);
+    try { await retryFailedTaskMutation({ conversationId: conversationId as never }); setNav("activity"); }
+    finally { setSending(false); }
+  }
+
+  async function sharePost(post: any) {
+    if (!conversationId || !data?.campaign?.landingUrl) return;
+    const popup = window.open("about:blank", "founder-share", "popup,width=760,height=720,scrollbars=yes,resizable=yes");
+    try {
+      await approveContentMutation({ conversationId: conversationId as never, contentId: post.id });
+      await navigator.clipboard.writeText(post.body).catch(() => undefined);
+      const siteUrl = (import.meta.env.VITE_CONVEX_SITE_URL || String(import.meta.env.VITE_CONVEX_URL ?? "").replace(".convex.cloud", ".convex.site"));
+      void fetch(`${siteUrl}/validation/event`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ campaignKey: data.campaign.publicKey, type: "composer_opened", platform: post.platform, contentId: post.id }) }).catch(() => undefined);
+      const landing = attributedLanding(data.campaign.landingUrl, post.platform, post.id);
+      let target = landing;
+      if (post.platform === "x") target = `https://x.com/intent/tweet?text=${encodeURIComponent(post.body)}`;
+      else if (post.platform === "linkedin") target = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(landing)}`;
+      else if (post.platform === "whatsapp") target = `https://wa.me/?text=${encodeURIComponent(post.body)}`;
+      else if (post.platform === "reddit") {
+        const community = String(post.community ?? "").replace(/^r\//, "").replace(/[^a-zA-Z0-9_]/g, "");
+        target = community ? `https://www.reddit.com/r/${community}/submit?type=SELF` : "https://www.reddit.com/submit";
+      }
+      if (popup) popup.location.href = target; else window.open(target, "_blank", "noopener,noreferrer");
+    } catch { popup?.close(); }
+  }
+
   if (!companyId) return <><Onboarding ownerKey={ownerKey} projects={projects} showcases={showcases} plan={plan} onReady={ready} onOpen={openProject} onUpgrade={() => setShowBilling(true)} />{showBilling && <BillingModal plan={plan} busy={checkoutBusy} error={checkoutError} onClose={() => setShowBilling(false)} onCheckout={() => void upgrade()} onBypass={bypassBilling} />}</>;
 
   return (
-    <main className="app-shell">
-      <section className="workspace">
-        <header className="workspace-header">
+    <main className="app-shell validation-shell">
+      <section className="workspace validation-main">
+        <header className="workspace-header validation-header">
           <Brand />
           <button className="company-label" onClick={() => setShowProjects(true)}><span>{isShowcase ? "showcase" : "company"}</span><strong>{companyName}</strong><small>switch ▾</small></button>
-          <div className="runtime"><span className={`runtime-pulse ${active ? "" : "idle"}`} />{workingCount ? `${workingCount} working` : active ? "queued" : "all quiet"}</div>
+          <div className="runtime"><span className={`runtime-pulse ${active ? "" : "idle"}`} />{workingCount ? `${workingCount} working` : active ? "queued" : String(data?.conversation?.stage ?? "ready").replaceAll("_", " ")}</div>
           <span className={`plan-chip plan-${plan.plan}`}>{plan.plan} · {plan.plan === "free" ? `${plan.used}/1` : "usage active"}</span>
           <button className="new-idea-button" onClick={newProject}>new idea</button>
         </header>
-
-        <div className="mission-strip">
-          <div><p>current mission</p><strong>{data?.conversation?.title || "give founder something to chase"}</strong></div>
-          <div className="mission-stat"><span>status</span><strong className={active ? "live" : progress === 100 ? "done" : ""}>{active ? "running" : progress === 100 ? "complete" : "ready"}</strong></div>
-          <div className="mission-stat"><span>tasks done</span><strong>{runs.filter(run => run.status === "succeeded").length} / {runs.length}</strong></div>
-          <div className="mission-stat"><span>proof</span><strong>{sources} sources</strong></div>
-          <div className="mission-progress"><i style={{ width: `${progress}%` }} /></div>
-        </div>
-
-        <div className="map-wrap">
-          <div className="map-tools" aria-label="workspace views">
-            <button title="company map" aria-label="company map" className={view === "map" ? "active" : ""} aria-pressed={view === "map"} onClick={() => setView("map")}><CirclesThreePlus size={18} /></button>
-            <button title="the team" aria-label="the team" className={view === "team" ? "active" : ""} aria-pressed={view === "team"} onClick={() => setView("team")}><SquaresFour size={18} /></button>
-            <button title="task tracker" aria-label="task tracker" className={view === "tasks" ? "active" : ""} aria-pressed={view === "tasks"} onClick={() => setView("tasks")}><ListChecks size={18} />{!!runs.length && <b>{runs.length}</b>}</button>
-            <button title="finished work" aria-label="finished work" className={view === "outputs" ? "active" : ""} aria-pressed={view === "outputs"} onClick={() => setView("outputs")}><Files size={18} />{!!artifacts.length && <b>{artifacts.length}</b>}</button>
-          </div>
-          {view === "map" && <CompanyMap runs={runs} selected={selectedAgent} onSelect={key => setSelectedAgent(current => current === key ? null : key)} />}
-          {view === "team" && <EmployeeGrid runs={runs} selected={selectedAgent} onSelect={key => setSelectedAgent(current => current === key ? null : key)} />}
-          {view === "tasks" && <TaskBoard runs={runs} events={events} onOpen={run => setOpenRunId(run._id)} onExportJson={() => exportMission("json")} onExportMarkdown={() => exportMission("markdown")} />}
-          {view === "outputs" && <OutputsBoard artifacts={artifacts} onOpen={setPreview} />}
-          {(view === "map" || view === "team") && <div className="workspace-foot"><UsersThree size={15} /><span>founder.exe / {companyName}</span><strong>4 agents · convex live</strong></div>}
+        <nav className="journey-nav" aria-label="validation journey">{JOURNEY.map(item => { const Icon = item.icon; return <button key={item.key} className={journeyView === item.key ? "active" : ""} onClick={() => setJourneyView(item.key)}><Icon size={16} /><span>{item.label}</span>{item.key === "market" && currentArtifact(artifacts, "research_report") && <i />}{item.key === "campaign" && currentArtifact(artifacts, "gtm_strategy") && <i />}{item.key === "landing" && data?.campaign?.landingUrl && <i />}{item.key === "signals" && data?.validation?.signups > 0 && <b>{data.validation.signups}</b>}</button>})}<div className="journey-progress"><i style={{ width: `${progress}%` }} /></div></nav>
+        {unresolvedFailure && !active && <div className="mission-recovery"><div><ShieldWarning size={18} /><span><strong>{agentFor(unresolvedFailure.agentKey).name} needs another pass.</strong><small>{unresolvedFailure.error ?? "The last response could not be validated."}</small></span></div><button onClick={() => void retryFailedTask()} disabled={sending}><ArrowClockwise size={15} /> retry task</button></div>}
+        <div className="journey-canvas">
+          {journeyView === "idea" && <IdeaWorkspace data={data ? { ...data, artifacts } : data} runs={runs} sources={sources} onGo={setJourneyView} />}
+          {journeyView === "market" && <MarketWorkspace artifact={currentArtifact(artifacts, "research_report")} stage={data?.conversation?.stage} reviews={data?.reviews ?? []} onApprove={() => void approveResearch()} onOpen={setPreview} />}
+          {journeyView === "campaign" && <CampaignWorkspace artifact={currentArtifact(artifacts, "gtm_strategy")} campaign={data?.campaign} stage={data?.conversation?.stage} approvals={data?.approvals ?? []} onApproveLaunch={() => void approveLaunch()} onShare={post => void sharePost(post)} onOpen={setPreview} />}
+          {journeyView === "landing" && <LandingWorkspace artifacts={artifacts} reviews={data?.reviews ?? []} onOpenSite={setSite} onOpenArtifact={setPreview} />}
+          {journeyView === "signals" && <SignalsWorkspace validation={data?.validation} campaign={data?.campaign} />}
+          {journeyView === "team" && <TeamWorkspace runs={runs} reviews={data?.reviews ?? []} events={events} onOpenTask={run => setOpenRunId(run._id)} onExport={exportMission} />}
         </div>
       </section>
 
-      <aside className="command-panel">
+      <button className="mobile-founder-trigger" onClick={() => { setNav("founder"); setMobilePanelOpen(true); }}><img src={agentFor("founder").avatar} alt="" /><span><small>founder</small><strong>talk or change something</strong></span><ArrowUp size={15} /></button>
+      <aside className={`command-panel ${mobilePanelOpen ? "is-mobile-open" : ""}`}>
         <div className="product-nav">
-          <button className={nav === "home" ? "active" : ""} onClick={() => { setNav("home"); setSelectedAgent(null); }}>home</button>
-          <button className={nav === "results" ? "active" : ""} onClick={() => { setNav("results"); setSelectedAgent(null); }}>results</button>
-          <button className={nav === "settings" ? "active" : ""} onClick={() => { setNav("settings"); setSelectedAgent(null); }}>settings</button>
+          <button className={nav === "founder" ? "active" : ""} onClick={() => setNav("founder")}>founder</button>
+          <button className={nav === "activity" ? "active" : ""} onClick={() => setNav("activity")}>team room</button>
+          <button className={nav === "settings" ? "active" : ""} onClick={() => setNav("settings")}>settings</button>
+          <button className="mobile-panel-close" onClick={() => setMobilePanelOpen(false)} aria-label="close founder panel"><X size={18} /></button>
         </div>
-        {selectedAgent
-          ? <AgentPanel agentKey={selectedAgent} runs={runs} artifacts={artifacts} onClose={() => setSelectedAgent(null)} onOpenTask={run => setOpenRunId(run._id)} />
-          : nav === "results"
-          ? <ResultsPanel conversationTitle={data?.conversation?.title} runs={runs} artifacts={artifacts} events={events} onOpenTask={run => setOpenRunId(run._id)} onOpenArtifact={setPreview} onOpenSite={setSite} onPreset={(text: string) => { setNav("home"); setMessage(text); void dispatch(text); }} />
-          : nav === "settings"
+        {nav === "settings"
           ? <SettingsPanel companyName={companyName} companyId={companyId} conversationId={conversationId} projects={projects} plan={plan} onOpenProject={openProject} onSwitch={() => setShowProjects(true)} onNewIdea={newProject} onUpgrade={() => setShowBilling(true)} />
+          : nav === "activity"
+          ? <ActivityPanel runs={runs} reviews={data?.reviews ?? []} events={events} onOpenTask={run => setOpenRunId(run._id)} />
           : <Chat data={data} message={message} setMessage={setMessage} onSend={() => dispatch()} onPreset={(text: string) => { setMessage(text); void dispatch(text); }} sending={sending} onOpenTask={run => setOpenRunId(run._id)} onOpenArtifact={setPreview} onOpenSite={setSite} readOnly={isShowcase} />}
       </aside>
 

@@ -7,3 +7,4 @@ convex/_generated
 backend/convex/_generated
 backend/landing_page_brief.json
 .wrangler/
+.tmp-screens/

@@ -16,14 +16,16 @@ Produce a source-grounded research packet for the Founder orchestrator.
 
 1. Restate the decision the research must support.
 2. Decompose it into at most four non-overlapping questions.
-3. Use the `RUNTIME LINKUP EVIDENCE` supplied in the task prompt. It was retrieved immediately before this run. Do not launch another search when it is present.
+3. Use every `RUNTIME LINKUP EVIDENCE SET` supplied in the task prompt. The sets separately cover competitors, user evidence, sizing inputs, and communities. Do not collapse a search snippet into a verified fact.
 4. Inspect the supplied results and deduplicate canonical URLs.
 5. Separate:
    - facts directly supported by a source;
    - inference derived from multiple sources;
    - recommendations for Founder.
-6. Produce one `research_report` artifact with competitor table, positioning gaps, user language, risks, recommendation, and source URLs.
-7. For `UPDATE_REQUEST` or `REVISION_REQUEST`, revise the supplied report instead of restarting. Preserve supported findings, implement the requested change, refresh affected evidence, and return one complete replacement.
+6. Calculate market size only when credible inputs exist. Use low/base/high ranges, show the formula, geography or scope, period, currency, confidence, and the URLs supporting each input. Never use “we can capture 1%” as a reachable-market calculation.
+7. Produce one `research_report` artifact with both a readable narrative and the required structured `data` object: verdict, decision, ICP, market-size ranges, competitors, signals, positioning, assumptions, and communities.
+8. For `UPDATE_REQUEST` or `REVISION_REQUEST`, revise the supplied report instead of restarting. Preserve supported findings, implement the requested change, refresh affected evidence, and return one complete replacement.
+9. For `PEER_REVIEW`, create no research artifact. Review the supplied GTM or landing artifact against the approved evidence. Return only concrete `reviewFindings` with severity and observable acceptance criteria. Notes must not trigger churn.
 
 ## Evidence rules
 

@@ -9,23 +9,37 @@ backend/src/              Hermes worker and HTTP service
 packages/contracts/       shared Zod contracts
 ```
 
-## Initial agents
+## Validation workflow
 
-- **Founder**: user-facing orchestrator. It decides which specialist(s) to delegate to and owns the final response.
-- **Research**: competitor and market analysis with cited artifacts.
-- **Landing Page**: produces a bounded landing-page brief and template-aware implementation artifact.
-- **Go-to-Market**: produces a launch strategy and platform-specific posts.
+- **Founder** is the only user-facing agent. It asks for missing product/audience context, explains decisions, routes revision requests, and owns both approval gates.
+- **Research** produces a structured evidence dossier, exposed market-size math, competitor field, signals, assumptions, and community constraints.
+- **Go-to-Market** peer-reviews Research, then produces a measurable validation campaign and safe platform-native drafts after research approval.
+- **Landing Page** consumes the approved dossier and reviewed campaign, adapts one approved template, and deploys a stable Cloudflare waitlist page.
+
+Research reviews GTM. Research and GTM both review the landing page. Material findings automatically create a replacement artifact for up to five rounds. Every prompt, response, handoff, duration, token record, review, artifact version, approval, event, and lead is stored in Convex and can be exported from the Team workspace.
 
 Convex is the audit log and source of truth. The worker does not directly mutate the database: Convex dispatches a signed command, the worker executes Hermes, then it sends a signed result to Convex for validation and storage.
 
 ## Local startup
 
-1. Copy `.env.example` values to `backend/.env` and `frontend/.env.local`.
+1. Copy `backend/.env.example` to `backend/.env` and `frontend/.env.example` to `frontend/.env.local`.
 2. From this directory, run `npm install`.
-3. Create/select a Convex deployment with `npm run dev:convex`, then set `CONVEX_URL` and `VITE_CONVEX_URL`.
+3. Create/select a Convex deployment with `npm run dev:convex`, then set both its cloud and site URLs.
 4. Start the worker with `npm run dev:backend` and the UI with `npm run dev:frontend`.
 
 `TEMPLATE_LIBRARY_PATH` is intentionally required by the Landing Page agent. Point it at the approved VPS template/prompt directory before enabling that agent in production.
+
+The frontend can run on any laptop because it talks directly to hosted Convex. Hermes and Cloudflare preview deployment still happen in the long-running worker, so keep that worker running on the configured VPS. The worker health check is `GET http://127.0.0.1:8788/health`.
+
+## Verification
+
+```sh
+npm test
+npm run typecheck
+npm run build
+```
+
+Landing pages send attributed view, CTA, form-start, and waitlist events to the public Convex HTTP routes. Generated scripts cannot make arbitrary network requests; the worker sanitizes model HTML and injects the trusted validation runtime after review.
 
 ## Billing and voice
 
